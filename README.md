@@ -63,7 +63,7 @@ ollama pull qwen3:1.7b
 
 ### 3. Clone this Repo
 ```bash
-git clone https://github.com/adrxLV/J.A.R.V.I.S.AI.git
+git clone https://github.com/Manvith911/Jarvis-AI.git
 cd Jarvis-AI
 ```
 
