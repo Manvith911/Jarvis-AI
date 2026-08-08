@@ -64,7 +64,7 @@ ollama pull qwen3:1.7b
 ### 3. Clone this Repo
 ```bash
 git clone https://github.com/adrxLV/J.A.R.V.I.S.AI.git
-cd J.A.R.V.I.S.AI
+cd Jarvis-AI
 ```
 
 ### 4. Create a Virtual Environment
