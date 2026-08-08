@@ -1,10 +1,17 @@
-import requests
 import json
+
+import requests
+from decouple import config
 
 # Everyday model + the bigger model used when a question is marked with the
 # ULTRATHINK keyword (e.g. "ULTRATHINK: explain black holes").
-DEFAULT_MODEL = "qwen3:0.6b"
-BIG_MODEL = "qwen3:1.7b"
+#
+# Both are configurable from your .env file (MODEL / BIG_MODEL) so you can
+# switch models without editing code. Defaults to qwen3:1.7b. Want smarter
+# ULTRATHINK answers? Pull a larger model and set BIG_MODEL in .env:
+#     ollama pull qwen3:4b
+DEFAULT_MODEL = config("MODEL", default="qwen3:1.7b")
+BIG_MODEL = config("BIG_MODEL", default="") or DEFAULT_MODEL
 DEEP_MARKER = "ultrathink"
 
 

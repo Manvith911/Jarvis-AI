@@ -39,8 +39,8 @@ from PyQt6.QtWidgets import (
 from main import PersonalizedAssistant, load_history
 from ollama_streaming import BIG_MODEL, DEFAULT_MODEL, split_deep_marker
 from functions.online_ops import (
-    get_city_from_ip, get_latest_news, get_random_joke,
-    get_weather_report, play_on_youtube, search_on_wikipedia,
+    find_my_ip, get_city_from_ip, get_latest_news, get_random_joke,
+    get_weather_report, have_internet, play_on_youtube, search_on_wikipedia,
 )
 from functions.os_ops import (
     looks_like_command, open_calculator, open_camera, open_cmd,
@@ -55,8 +55,8 @@ except Exception:
     psutil = None
 
 # Models offered in the HUD's model picker (keep in sync with what you
-# pulled via `ollama pull`).
-MODELS = [DEFAULT_MODEL, BIG_MODEL]
+# pulled via `ollama pull`). Deduped so a model only shows up once.
+MODELS = list(dict.fromkeys([DEFAULT_MODEL, BIG_MODEL]))
 OLLAMA_URL = "http://localhost:11434"
 
 SETTINGS_FILE = os.path.join(
@@ -762,6 +762,14 @@ class AssistantWorker(QObject):
                 kind = self.followup
                 self.followup = ""
                 self.assistant.history.append(f"User: {msg}")
+                if not have_internet():
+                    # safety net: connectivity can drop between the button
+                    # click and the user's answer
+                    self._offline_reply(
+                        "look things up on Wikipedia"
+                        if kind == "wikipedia"
+                        else "play YouTube videos")
+                    return
                 if kind == "wikipedia":
                     try:
                         results = search_on_wikipedia(msg)
@@ -959,8 +967,17 @@ class AssistantWorker(QObject):
 
         threading.Thread(target=job, daemon=True).start()
 
+    def _offline_reply(self, what):
+        """Reply when an online-only quick action is clicked while offline."""
+        self.reply_line(
+            f"You're offline right now, so I can't {what}. "
+            "The AI chat, apps and screenshots still work!")
+
     def action_weather(self):
         def fn():
+            if not have_internet():
+                self._offline_reply("check the weather")
+                return
             city = get_city_from_ip()
             weather, temp, feels = get_weather_report(city)
             place = city or "your area"
@@ -971,11 +988,17 @@ class AssistantWorker(QObject):
 
     def action_joke(self):
         def fn():
+            if not have_internet():
+                self._offline_reply("tell you a joke")
+                return
             self.reply_line(get_random_joke())
         self._launch("One joke, coming right up!", fn)
 
     def action_news(self):
         def fn():
+            if not have_internet():
+                self._offline_reply("fetch the news")
+                return
             news = get_latest_news()
             if news:
                 self.reply_line(f"Here's one: {news[0]}")
@@ -985,15 +1008,25 @@ class AssistantWorker(QObject):
 
     def action_ip(self):
         def fn():
-            self.reply_line(
-                f"Your IP Address is {find_my_ip()} "
-                f"(don't worry, I won't leak it!)")
+            ip = find_my_ip()
+            if ip:
+                self.reply_line(
+                    f"Your IP Address is {ip} "
+                    f"(don't worry, I won't leak it!)")
+            else:
+                self.reply_line(
+                    "Couldn't fetch your IP — looks like you're offline.")
         self._launch(None, fn)
 
     def action_screenshot(self):
         def fn():
-            take_screenshot()
-            self.line.emit("Screenshot requested (see console for output).", "sys")
+            path = take_screenshot()
+            if path:
+                # show the path in the log without reading it out loud
+                self.line.emit(f"Screenshot saved to {path}", "sys")
+            else:
+                self.line.emit(
+                    "Screenshot failed — couldn't capture the screen.", "err")
         self._launch("Screenshot time! Hold still...", fn)
 
     def action_open(self, name, func):
@@ -1003,10 +1036,16 @@ class AssistantWorker(QObject):
         self._launch(f"Opening {name.lower()} for you.", fn)
 
     def action_youtube(self):
+        if not have_internet():
+            self._offline_reply("play YouTube videos")
+            return
         self.followup = "youtube"
         self.say("What do you want to jam to on YouTube?")
 
     def action_wikipedia(self):
+        if not have_internet():
+            self._offline_reply("look things up on Wikipedia")
+            return
         self.followup = "wikipedia"
         self.say("What should I look up on Wikipedia, friend?")
 
@@ -1140,6 +1179,7 @@ class MainWindow(QMainWindow):
         v.addWidget(self._led("OLLAMA"))
         v.addWidget(self._led("TTS"))
         v.addWidget(self._led("MIC"))
+        v.addWidget(self._led("INTERNET"))
         v.addSpacing(4)
 
         self.speaker_btn = QPushButton(
@@ -1303,6 +1343,10 @@ class MainWindow(QMainWindow):
         self._ollama_timer.timeout.connect(self._check_ollama)
         self._ollama_timer.start(8000)
 
+        self._internet_timer = QTimer(self)
+        self._internet_timer.timeout.connect(self._check_internet)
+        self._internet_timer.start(15000)
+
         self._speak_timer = QTimer(self)
         self._speak_timer.timeout.connect(self._poll_speech)
         self._speak_timer.start(180)
@@ -1323,6 +1367,9 @@ class MainWindow(QMainWindow):
         # server up in the background so the AI is ready before you ask.
         self._ensure_ollama_background()
         self.worker.say(self._greeting_text())
+        # Check connectivity in the background and warn the user once if
+        # offline — never delay the greeting on a network probe.
+        threading.Thread(target=self._startup_internet_check, daemon=True).start()
         if self.assistant.tts.muted:
             self.log.enqueue_line(
                 "Voice replies are OFF (remembered from last time) — "
@@ -1414,6 +1461,32 @@ class MainWindow(QMainWindow):
         return f"Hey night owl {username}!"
 
     # -- status checks -------------------------------------------------------
+    def _check_internet(self):
+        def job():
+            try:
+                ok = have_internet()
+            except Exception as e:
+                print(f"[gui] internet check error: {e}")
+                ok = False
+            self.led_update.emit("INTERNET",
+                                 "ONLINE" if ok else "OFFLINE",
+                                 C.GREEN if ok else C.RED)
+        threading.Thread(target=job, daemon=True).start()
+
+    def _startup_internet_check(self):
+        """Background connectivity check on boot: update the LED and warn."""
+        try:
+            ok = have_internet()
+        except Exception:
+            ok = False
+        self.led_update.emit("INTERNET", "ONLINE" if ok else "OFFLINE",
+                             C.GREEN if ok else C.RED)
+        if not ok:
+            self.worker.say(
+                "Heads up — you're offline right now. Weather, news, jokes, "
+                "your IP and web search won't work, but I can still chat, "
+                "open apps, and take screenshots.")
+
     def _check_ollama(self):
         def job():
             try:
@@ -1682,28 +1755,6 @@ class MainWindow(QMainWindow):
 
 
 def main():
-    # Prevent PersonalizedAssistant from spinning up the default pyttsx3
-    # engine on the GUI thread — GuiSpeech (engine owned by a dedicated
-    # speech thread) replaces it right after construction.
-    import main as main_mod
-
-    class _NoopSpeech:
-        """Placeholder that never speaks; only used until GuiSpeech lands."""
-
-        tts_available = False
-        is_speaking = False
-
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def speak(self, text):
-            pass
-
-        def is_busy(self):
-            return False
-
-    main_mod.Speech = _NoopSpeech
-
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     botname = config("BOTNAME", default="JARVIS")
@@ -1714,8 +1765,11 @@ def main():
     start_model = settings.get("model", DEFAULT_MODEL)
     if start_model not in MODELS:
         start_model = DEFAULT_MODEL
-    assistant = PersonalizedAssistant(start_model, botname, load_history())
-    assistant.tts = GuiSpeech()  # route speech through the GUI thread
+    # GuiSpeech owns the TTS engine on a dedicated speech thread, so it is
+    # handed to the assistant directly — no default engine is ever spun up
+    # on the GUI thread.
+    assistant = PersonalizedAssistant(start_model, botname, load_history(),
+                                      tts=GuiSpeech())
     assistant.tts.muted = not speaker_on
     worker = AssistantWorker(assistant)
     window = MainWindow(assistant, worker, speaker_on, auto_listen, wake_word)

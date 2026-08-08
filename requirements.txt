@@ -15,6 +15,7 @@ audioop-lts
 PyQt6
 psutil
 ddgs
+Pillow
 
 # Offline wake-word detection ('hey jarvis') — models download on first run.
 # If you skip this, the wake word falls back to online speech recognition.

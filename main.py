@@ -1,8 +1,5 @@
-import threading
 import time
-import requests
 import re
-import pyttsx3
 import speech_recognition as sr
 from decouple import config
 from datetime import datetime
@@ -35,14 +32,15 @@ if sys.stdout is None or sys.stderr is None:
     if sys.stderr is None:
         sys.stderr = _sink
 
-from ollama_streaming import StreamingOllama, BIG_MODEL, split_deep_marker
+from ollama_streaming import StreamingOllama
+from speech_engine import Speech
 from ai_memory import (
     apply_facts, clear_memory, confirmation_text, extract_facts,
     load_memory, memory_snippet, memory_summary, save_memory,
 )
 from functions.online_ops import (
     find_my_ip, get_city_from_ip, get_latest_news, get_random_joke,
-    get_weather_report, play_on_youtube,
+    get_weather_report, have_internet, play_on_youtube,
     search_on_wikipedia, search_on_google
 )
 from functions.os_ops import (
@@ -70,6 +68,31 @@ _CITY_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Informational / factual questions that should get automatic web context so
+# the (small) local model answers from real facts instead of guessing or
+# claiming it's "a coding assistant".
+_FACTUAL_RE = re.compile(
+    r"\btell\s+me\b.{0,20}\b(?:about|on|regarding)\b|"
+    r"\b(?:give|gimme|get|show|find)\s+me\b.{0,30}\b"
+    r"(?:information|info|details|facts)\b|"
+    r"\binformation\s+(?:on|about|regarding)\b|"
+    r"\b(?:details|facts|info)\s+(?:about|on|regarding)\b|"
+    r"\b(?:biography|history)\s+of\b|"
+    r"\bwho\s+(?:is|was|are|were)\s+(?!my\b|your\b|you\b|we\b)|"
+    r"\b(?:define|explain)\b|"
+    r"\bwhat(?:'s|\s+(?:is|are|was|were))\s+"
+    r"(?!my\b|your\b|this\b|that\b|it\b|up\b|these\b|we\b)",
+    re.IGNORECASE,
+)
+
+# Identity questions where the model should describe itself / the user —
+# never web-search these.
+_IDENTITY_RE = re.compile(
+    r"\bwho\s+are\s+you\b|"
+    r"\btell\s+me\s+about\s+(?:you|yourself|yours|my|your)\b",
+    re.IGNORECASE,
+)
+
 
 def parse_city_from_query(query):
     """Pull a city out of 'weather in london today' or "what's the weather
@@ -85,68 +108,10 @@ def parse_city_from_query(query):
         "", city, flags=re.IGNORECASE).strip()
     return city or None
 
-class Speech:
-    """Text-to-speech system (SAPI5 via win32com, pyttsx3 as fallback)."""
-
-    def __init__(self):
-        self.is_speaking = False
-        self.speech_lock = threading.Lock()
-        self.tts_available = False
-        self._sapi = None
-        self._engine = None
-        try:
-            from speech_engine import SapiSpeech, strip_for_speech
-            self._sapi = SapiSpeech(rate=1)
-            if self._sapi.ok:
-                self.tts_available = True
-                print("TTS ready")
-                return
-            print(f"SAPI5 unavailable ({self._sapi.error}); trying pyttsx3...")
-        except Exception as e:
-            print(f"TTS init error: {e}")
-        # fallback: pyttsx3 (on some systems only the first utterance
-        # produces audio — the SAPI5 path above is preferred)
-        try:
-            import pyttsx3
-            self._engine = pyttsx3.init('sapi5')
-            self._engine.setProperty('rate', 180)
-            self._engine.setProperty('volume', 1.0)
-            voices = self._engine.getProperty('voices')
-            if voices and len(voices) > 1:
-                self._engine.setProperty('voice', voices[-1].id)
-            self.tts_available = True
-            print("TTS ready")
-        except Exception as e:
-            print(f"TTS failed: {e}")
-            self.tts_available = False
-
-    def speak(self, text):
-        if not text or not text.strip():
-            return
-        with self.speech_lock:
-            if not self.tts_available:
-                print(f"TTS unavailable. Text: {text}")
-                return
-            try:
-                self.is_speaking = True
-                print(f"Speaking: {text}")
-                if self._sapi is not None:
-                    self._sapi.speak(text)
-                else:
-                    self._engine.say(strip_for_speech(text))
-                    self._engine.runAndWait()
-            except Exception as e:
-                print(f"TTS error: {e}")
-            finally:
-                self.is_speaking = False
-
-    def is_busy(self):
-        return self.is_speaking
-
 class PersonalizedAssistant:
-    def __init__(self, model_name, botname, history_text):
+    def __init__(self, model_name, botname, history_text, tts=None):
         self.botname = botname
-        self.tts = Speech()
+        self.tts = tts or Speech()
         self.is_processing = False
         self.model = model_name
         self.ollama = StreamingOllama(model=self.model)
@@ -160,14 +125,23 @@ class PersonalizedAssistant:
         # FRIENDLY, CASUAL, HELPFUL PROMPT
         self.prompt_template = (
             f"{self.history_text}\n"
-            "You are {botname}, an AI assistant who is also a friendly sidekick for {username}. "
+            "You are {botname}, a general-purpose personal assistant and friendly sidekick "
+            "for {username}. You are NOT a coding assistant, NOT a programming tool, and NOT "
+            "a chatbot that only talks about code. Never say things like \"I am a coding "
+            "assistant\", \"I am an AI assistant\", or \"I can't help with that\". You can "
+            "and should answer ANY question — general knowledge, history, politics, science, "
+            "sports, celebrities, travel, food, anything. "
             "The person talking to you is the user, and their name is {username}. "
             "Be warm, casual, and supportive—like a buddy who always has their back. "
             "Your tone should be fun, easygoing, and helpful, not too formal or robotic. "
-            "Keep your answers short (1-2 sentences), unless more detail is needed. Don't be afraid to add a little personality, a joke, or a friendly comment now and then. "
-            "IMPORTANT: when the user asks about themselves (like \"who am I\" or \"what is my name\"), "
-            "answer about the USER ({username}) — never describe yourself for those questions. "
-            "Only describe yourself when they ask \"who are you\".\n"
+            "Keep your answers short (1-2 sentences) for casual chat, but when the user asks "
+            "for detailed or complete information (like \"give me all information on X\"), "
+            "give a thorough, well-organized answer with several sentences or short paragraphs. "
+            "When the prompt includes a [Web info about ...] block, base your answer on that "
+            "information and summarize it in your own words — don't make up facts that aren't in it. "
+            "IMPORTANT: when the user asks about themselves (like \"who am I\" or \"what is my "
+            "name\"), answer about the USER ({username}) — never describe yourself for those "
+            "questions. Only describe yourself when they ask \"who are you\".\n"
             "{memory}\n"
             "{ongoing}\nUser: {question}\nAI:"
         )
@@ -197,17 +171,43 @@ class PersonalizedAssistant:
         return None
 
     def build_prompt(self, question):
-        """Build the full prompt for a question, adding Google context when requested."""
+        """Build the full prompt for a question, adding web context when useful.
+
+        Web context is fetched for explicit "google X" requests AND automatically
+        for factual questions ("tell me about X", "who is X", "give me information
+        on X"...) so the small local model answers from real web facts.
+        """
         ongoing = "\n".join(self.history[-6:])
+        lower_q = (question or "").lower()
+        explicit_search = (lower_q.startswith("google ")
+                           or lower_q.startswith("search on google"))
 
-        # Google context addition
+        # Web context addition — explicit "google ..." wins; otherwise auto-search
+        # factual/informational questions.
+        google_query = None
+        if explicit_search:
+            google_query = (question.partition(" ")[2]
+                            if lower_q.startswith("google ")
+                            else question.partition("search on google")[2].strip())
+        elif self._looks_factual(question):
+            google_query = question
+
         google_context = ""
-        if question.lower().startswith("google ") or question.lower().startswith("search on google"):
-            google_query = question.partition(" ")[2] if question.lower().startswith("google ") else question.partition("search on google")[2].strip()
-            self.speak("Give me a sec, googling that for you...")
-            google_results = search_on_google(google_query)
-            google_context = f"\n[Google info about '{google_query}']:\n{google_results}\n"
+        if google_query:
+            if have_internet():
+                self.speak("Give me a sec — looking that up for you!")
+                google_results = search_on_google(google_query)
+                # only inject real results; never the failure placeholder
+                if google_results and google_results != "No results found on the web.":
+                    google_context = f"\n[Web info about '{google_query}']:\n{google_results}\n"
+            elif explicit_search:
+                # explicit "google X" request — say search is unavailable;
+                # auto-searched factual questions just fall back to the model
+                self.speak("You're offline, so I can't search the web right now — "
+                           "I'll answer from what I know.")
 
+        # NOTE: str.format inserts values verbatim, so braces in the user's
+        # question (e.g. "what is a python dict {}") are safe as-is.
         return self.prompt_template.format(
             botname=self.botname,
             username=self.username,
@@ -215,6 +215,14 @@ class PersonalizedAssistant:
             ongoing=ongoing + google_context,
             question=question
         )
+
+    def _looks_factual(self, question):
+        """True when the question is informational ("tell me about X", "who is X",
+        "give me information on X") and would benefit from web context."""
+        q = question or ""
+        if _IDENTITY_RE.search(q):
+            return False
+        return bool(_FACTUAL_RE.search(q))
 
     def generate_reply(self, question, speak=True, paced=True):
         """Yield reply tokens one at a time, speaking them in sentence chunks.
@@ -264,27 +272,6 @@ class PersonalizedAssistant:
         if speak and buffer.strip():
             flush(force=True)
 
-    def chat(self, question):
-        """Stream reply and speak by sentence or chunk.
-
-        A question prefixed with ULTRATHINK (e.g. "ULTRATHINK: explain X")
-        is answered by the bigger model and switched back afterwards.
-        """
-        self.is_processing = True
-        old_model = self.ollama.model
-        question, deep = split_deep_marker(question)
-        if deep and old_model != BIG_MODEL:
-            self.ollama.model = BIG_MODEL
-            self.speak("Ultra Think mode on — big brain engaged!")
-        print(f"\n{self.botname}: ", end="", flush=True)
-        try:
-            reply = "".join(self.generate_reply(question, speak=True))
-        finally:
-            self.ollama.model = old_model
-        self.history.append(f"User: {question}")
-        self.history.append(f"AI: {reply.strip()}")
-        self.is_processing = False
-
     def speak(self, text):
         print(f"{self.botname}: {text}")
         self.tts.speak(text)
@@ -293,10 +280,20 @@ class PersonalizedAssistant:
         while self.tts.is_busy():
             time.sleep(0.1)
 
+    def _offline(self, action):
+        """Speak a friendly notice when an online-only feature is asked for
+        while the machine has no internet."""
+        self.speak(
+            f"Sorry, you're offline right now, so I can't {action}. "
+            "I can still chat, open apps, and take screenshots.")
+
     def weather_report(self, query=None):
         """Report the weather for a city mentioned in the query, or the
         location detected from the public IP. Never fails hard: a key-free
         wttr.in fallback answers even with no API keys configured."""
+        if not have_internet():
+            self._offline("check the weather")
+            return
         try:
             self.is_processing = True
             city = parse_city_from_query(query) if query else None
@@ -409,14 +406,12 @@ class PersonalizedAssistant:
 
         # 2. fixed quick commands
         commands = {
-            'ip address': (lambda: self.speak(
-                f'Your IP Address is {find_my_ip()} (don\'t worry, I won\'t leak it!)'), None),
-            'my ip': (lambda: self.speak(
-                f'Your IP Address is {find_my_ip()} (don\'t worry, I won\'t leak it!)'), None),
+            'ip address': (self._report_ip, None),
+            'my ip': (self._report_ip, None),
             'weather': (lambda: self.weather_report(query), None),
-            'joke': (lambda: self.speak(get_random_joke()), None),
+            'joke': (self._report_joke, None),
             'news': (self.report_news, None),
-            'screenshot': (take_screenshot, "Screenshot time! Hold still..."),
+            'screenshot': (self._announce_screenshot, "Screenshot time! Hold still..."),
         }
         for key, (func, announce) in commands.items():
             if key in lowered:
@@ -432,6 +427,9 @@ class PersonalizedAssistant:
         # 3. "play <song> on youtube" -> play it right away (no follow-up Q)
         clean = strip_politeness(query)
         if re.match(r"^(please\s+)?play\s+", clean, flags=re.IGNORECASE):
+            if not have_internet():
+                self._offline("play YouTube videos")
+                return True
             video = re.sub(r"^(please\s+)?play\s+", "", clean,
                            flags=re.IGNORECASE)
             video = re.sub(r"\s+(on\s+)?youtube\s*$", "", video).strip()
@@ -441,6 +439,9 @@ class PersonalizedAssistant:
                 return True
 
         if 'wikipedia' in lowered:
+            if not have_internet():
+                self._offline("look things up on Wikipedia")
+                return True
             self.speak('What should I look up on Wikipedia, friend?')
             self.wait_for_speech_completion()
             search_query = self.listen()
@@ -454,6 +455,9 @@ class PersonalizedAssistant:
             return True
 
         if 'youtube' in lowered:
+            if not have_internet():
+                self._offline("play YouTube videos")
+                return True
             self.speak('What do you want to jam to on YouTube?')
             self.wait_for_speech_completion()
             video = self.listen()
@@ -488,6 +492,9 @@ class PersonalizedAssistant:
         return False
 
     def report_news(self):
+        if not have_internet():
+            self._offline("fetch the news")
+            return
         try:
             self.speak("Let me grab some news headlines for you...")
             news = get_latest_news()
@@ -495,6 +502,33 @@ class PersonalizedAssistant:
                 self.speak(f"Here's one: {news[0]}")
         except Exception as e:
             self.speak("Couldn't fetch news. I blame the internet goblins!")
+
+    def _report_joke(self):
+        if not have_internet():
+            self._offline("tell you a joke")
+            return
+        try:
+            self.speak(get_random_joke())
+        except Exception as e:
+            print(f"Joke error: {e}")
+            self.speak("Couldn't fetch a joke. I blame the internet goblins!")
+
+    def _report_ip(self):
+        """Speak the public IP, or a friendly message when offline."""
+        ip = find_my_ip()
+        if ip:
+            self.speak(f"Your IP address is {ip}. Don't worry, I won't leak it!")
+        else:
+            self.speak("Couldn't fetch your IP — looks like you're offline.")
+
+    def _announce_screenshot(self):
+        """Take a screenshot; speak a short confirmation, log the path."""
+        path = take_screenshot()
+        if path:
+            print(f"Screenshot saved to {path}")
+            self.speak("Screenshot saved — check the screenshots folder!")
+        else:
+            self.speak("Screenshot failed — couldn't capture the screen.")
 
 if __name__ == '__main__':
     # The Desktop HUD is the only interface now — running `python main.py`

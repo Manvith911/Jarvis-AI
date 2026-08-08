@@ -1,14 +1,88 @@
+import re
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import requests
 import wikipedia
 import pywhatkit as kit
-from email.message import EmailMessage
-import smtplib
 from urllib.parse import quote
 from decouple import config
 
+_IPV4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+_IPV6_RE = re.compile(r"^[0-9a-fA-F:.]+$")
+
+# Internet-connectivity probe + a short shared cache so the check never
+# hammers the network (every command call reuses the last result).
+_INTERNET_PROBES = (
+    "https://www.gstatic.com/generate_204",
+    "https://api.ipify.org",
+    "https://www.google.com/generate_204",
+)
+_INTERNET_CACHE_TTL = 30  # seconds
+_internet_cache = {"result": None, "at": 0.0}
+
+
+def have_internet():
+    """True when this machine has internet access (cached for ~30s).
+
+    Probes lightweight endpoints (fast, no API keys) so it returns quickly
+    and the cached result is shared by all callers. Returns False, never
+    raises, when there's no connectivity.
+    """
+    now = time.time()
+    if now - _internet_cache["at"] < _INTERNET_CACHE_TTL:
+        return bool(_internet_cache["result"])
+    ok = False
+    for url in _INTERNET_PROBES:
+        try:
+            resp = requests.get(url, timeout=4)
+            if resp.status_code < 500:
+                ok = True
+                break
+        except Exception:
+            continue
+    _internet_cache["at"] = now
+    _internet_cache["result"] = ok
+    return ok
+
+
+def _fetch_ip(url):
+    """Fetch the IP from one provider; return a valid IP string or None."""
+    try:
+        resp = requests.get(url, timeout=4)
+        text = (resp.text or "").strip()
+        if (resp.status_code == 200
+                and (_IPV4_RE.match(text) or _IPV6_RE.match(text))):
+            return text
+    except Exception:
+        pass
+    return None
+
+
 def find_my_ip():
-    ip_address = requests.get('https://api64.ipify.org?format=json').json()
-    return ip_address["ip"]
+    """Return the public IP address, or None when offline.
+
+    Queries several free providers in parallel so a single outage (or being
+    offline) never stalls the command; returns None, never raises, when no
+    internet is available.
+    """
+    if not have_internet():
+        return None
+    providers = (
+        "https://api64.ipify.org",
+        "https://api.ipify.org",
+        "https://ifconfig.me/ip",
+    )
+    ex = ThreadPoolExecutor(max_workers=len(providers))
+    try:
+        futures = [ex.submit(_fetch_ip, url) for url in providers]
+        for fut in as_completed(futures):
+            ip = fut.result()
+            if ip:
+                return ip
+    finally:
+        ex.shutdown(wait=False)
+    return None
 
 def search_on_wikipedia(query):
     results = wikipedia.summary(query, sentences=2)
@@ -78,30 +152,6 @@ def search_on_google(query, num_results=3):
         except Exception as e:
             print(f"SerpAPI error: {e}")
     return "No results found on the web."
-
-def send_whatsapp_message(number, message):
-    kit.sendwhatmsg_instantly(f"+351{number}", message)
-
-EMAIL = config("EMAIL", default="")
-PASSWORD = config("PASSWORD", default="")
-
-
-def send_email(receiver_address, subject, message):
-    try:
-        email = EmailMessage()
-        email['To'] = receiver_address
-        email["Subject"] = subject
-        email['From'] = EMAIL
-        email.set_content(message)
-        s = smtplib.SMTP("smtp.gmail.com", 587)
-        s.starttls()
-        s.login(EMAIL, PASSWORD)
-        s.send_message(email)
-        s.close()
-        return True
-    except Exception as e:
-        print(e)
-        return False
 
 # GNews.io — generous free tier (100 requests/day), real-time headlines.
 GNEWS_API_KEY = config("GNEWS_API_KEY", default="")
@@ -233,25 +283,9 @@ def get_weather_report(city=None):
         print(f"wttr.in error: {e}")
     return "Unknown", "--℃", "--℃"
 
-TMDB_API_KEY = config("TMDB_API_KEY", default="")
-
-
-def get_trending_movies():
-    trending_movies = []
-    res = requests.get(
-        f"https://api.themoviedb.org/3/trending/movie/day?api_key={TMDB_API_KEY}").json()
-    results = res["results"]
-    for r in results:
-        trending_movies.append(r["original_title"])
-    return trending_movies[:5]
-
 def get_random_joke():
     headers = {
         'Accept': 'application/json'
     }
     res = requests.get("https://icanhazdadjoke.com/", headers=headers).json()
     return res["joke"]
-
-def get_random_advice():
-    res = requests.get("https://api.adviceslip.com/advice").json()
-    return res['slip']['advice']

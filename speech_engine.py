@@ -11,9 +11,13 @@ Usage (create one instance on each thread that speaks):
     speech = SapiSpeech(rate=1)
     if speech.ok:
         speech.speak("Hello there!")
+
+Also hosts the synchronous ``Speech`` wrapper (SAPI5 + pyttsx3 fallback)
+used as the default TTS; the GUI substitutes its own thread-based version.
 """
 
 import re
+import threading
 
 try:
     import pythoncom
@@ -103,10 +107,60 @@ class SapiSpeech:
             return
         self._voice.Speak(clean)
 
-    def purge(self):
-        """Stop current speech and clear anything queued (SAPI5)."""
+
+class Speech:
+    """Synchronous text-to-speech wrapper (SAPI5 primary, pyttsx3 fallback)."""
+
+    def __init__(self):
+        self.is_speaking = False
+        self.speech_lock = threading.Lock()
+        self.tts_available = False
+        self._sapi = None
+        self._engine = None
         try:
-            # SVSFlagsAsync | SVSFPurgeBeforeSpeak
-            self._voice.Speak("", 1 | 8)
-        except Exception:
-            pass
+            self._sapi = SapiSpeech(rate=1)
+            if self._sapi.ok:
+                self.tts_available = True
+                print("TTS ready")
+                return
+            print(f"SAPI5 unavailable ({self._sapi.error}); trying pyttsx3...")
+        except Exception as e:
+            print(f"TTS init error: {e}")
+        # fallback: pyttsx3 (on some systems only the first utterance
+        # produces audio — the SAPI5 path above is preferred)
+        try:
+            import pyttsx3
+            self._engine = pyttsx3.init('sapi5')
+            self._engine.setProperty('rate', 180)
+            self._engine.setProperty('volume', 1.0)
+            voices = self._engine.getProperty('voices')
+            if voices and len(voices) > 1:
+                self._engine.setProperty('voice', voices[-1].id)
+            self.tts_available = True
+            print("TTS ready")
+        except Exception as e:
+            print(f"TTS failed: {e}")
+            self.tts_available = False
+
+    def speak(self, text):
+        if not text or not text.strip():
+            return
+        with self.speech_lock:
+            if not self.tts_available:
+                print(f"TTS unavailable. Text: {text}")
+                return
+            try:
+                self.is_speaking = True
+                print(f"Speaking: {text}")
+                if self._sapi is not None:
+                    self._sapi.speak(text)
+                else:
+                    self._engine.say(strip_for_speech(text))
+                    self._engine.runAndWait()
+            except Exception as e:
+                print(f"TTS error: {e}")
+            finally:
+                self.is_speaking = False
+
+    def is_busy(self):
+        return self.is_speaking

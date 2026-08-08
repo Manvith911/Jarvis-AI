@@ -9,6 +9,7 @@ import os
 import re
 import subprocess as sp
 import urllib.parse
+from datetime import datetime
 from functools import lru_cache
 
 # ---------------------------------------------------------------------------
@@ -75,15 +76,6 @@ def normalize_url(name):
     if "." in n:
         return "https://" + n
     return "https://" + n + ".com"
-
-
-def looks_like_url(name):
-    n = (name or "").strip().lower()
-    return (
-        n.startswith(("http://", "https://", "www."))
-        or "." in n
-        or n in KNOWN_SITES
-    )
 
 
 def open_in_browser(url, browser=None):
@@ -173,7 +165,31 @@ def open_calculator():
 
 
 def take_screenshot():
-    print("screenshot functionality is not implemented yet.")
+    """Capture the whole screen to a PNG inside the ``screenshots/`` folder.
+
+    Uses Pillow's ImageGrab (Windows). Returns the saved file path, or None
+    when the capture failed (Pillow missing, locked screen, ...).
+    """
+    try:
+        from PIL import ImageGrab
+    except ImportError:
+        print("[screenshot] Pillow is not installed - run: pip install Pillow")
+        return None
+    try:
+        shots_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "screenshots",
+        )
+        os.makedirs(shots_dir, exist_ok=True)
+        # milliseconds so two captures within the same second never clash
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        path = os.path.join(shots_dir, f"screenshot_{stamp}.png")
+        ImageGrab.grab().save(path)
+        print(f"[screenshot] saved: {path}")
+        return path
+    except Exception as e:
+        print(f"[screenshot] failed: {e}")
+        return None
 
 
 @lru_cache(maxsize=1)
@@ -302,10 +318,6 @@ def open_application(name, browser=None):
     if low in KNOWN_SITES or " " not in n:
         return open_in_browser(normalize_url(n), browser)
     return False
-
-
-def _has_builtin(name):
-    return name in _BUILTIN_APPS
 
 
 _BUILTIN_APPS = {
