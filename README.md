@@ -4,13 +4,19 @@
 
 <h1 align="center">🤖 <b>J.A.R.V.I.S.</b> Virtual Assistant</h1>
 <p align="center">
-  A powerful <b>AI-driven virtual assistant</b> inspired by <b>J.A.R.V.I.S.</b>, capable of controlling your PC and responding intelligently using <b>Ollama models</b>.
+  <b>Your own offline Iron-Man assistant.</b> A privacy-first, AI-driven voice assistant
+  that runs entirely on your PC with <b>Ollama</b> — it controls your computer, answers
+  from local models, and remembers who you are. No cloud, no subscriptions.
 </p>
 
 ---
 
 ## 🚀 About the Project
-This Ollama Virtual Assistant is an AI-powered voice assistant that interacts with users through speech recognition and synthesis. Built using Python, it uses Ollama models to process commands and perform various actions on your computer, making it an intelligent and hands-free assistant.
+**J.A.R.V.I.S.** is an AI-powered voice assistant inspired by Tony Stark's J.A.R.V.I.S. It runs **100% locally**: local Ollama models (Qwen 3) answer your questions, offline wake-word detection listens for "Hey Jarvis", and a PyQt6 Desktop HUD brings the Iron-Man Mark-L style to your screen.
+
+> ✨ **In one line:** *Talk to your PC — open apps, search the web, check the weather — and it talks back, remembers your name and interests, all offline and free.*
+
+Unlike cloud assistants, nothing you say leaves your machine — speech recognition, AI answers, and voice replies are all generated locally. On top of PC control, it now has a **personal memory**: tell it "my name is Sam" or "I like chess" once, and it remembers across sessions.
 <p align="left">
   <img src="https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white" />
   <img src="https://img.shields.io/badge/Ollama-000000?style=for-the-badge" />
@@ -20,9 +26,13 @@ This Ollama Virtual Assistant is an AI-powered voice assistant that interacts wi
 
 ### 🔥 Features
 - 🗣️ **Voice-controlled assistant** – Uses speech recognition to process commands.
-- 🤖 **AI-powered responses** – Utilizes Ollama models for intelligent interaction.
-- 💻 **PC control capabilities** – Automates tasks and executes system commands.
-- 🎙️ **Text-to-Speech (TTS) and Speech Recognition (SR)** – Provides a seamless conversational experience.
+- 🤖 **AI-powered responses** – Uses local Ollama models (Qwen 3) for intelligent interaction.
+- 💻 **PC control capabilities** – Opens apps & websites in your browser of choice ("open github in brave"), takes screenshots, and runs system commands.
+- 🎙️ **Text-to-Speech (TTS) and Speech Recognition (SR)** – Seamless, fully offline conversation.
+- 🧠 **Personal memory** – Remembers your name, interests, favourites, job, location and birthday across sessions ("my name is Sam", "I like chess"). Ask *"what do you know about me?"* anytime, or *"forget everything"* to wipe it.
+- 🪪 **Knows who you are** – Ask *"who am I?"* and it answers with your name (no more confused AI talking about itself).
+- 🌍 **Key-free fallbacks** – Weather, news and web search work even with zero API keys configured.
+- ⚡ **Always up** – Auto-starts Ollama when needed and can launch itself at Windows startup.
 
 ---
 
@@ -36,73 +46,150 @@ This Ollama Virtual Assistant is an AI-powered voice assistant that interacts wi
 - [License](#license)  
 
 ## 🏗️ Installation & Setup
-To run this assistant, follow the steps below:
+Follow these steps **in order** — each one tells you the exact command to run.
 
-### Clone this Repo
+### 1. Install Python 3.13 (for PyAudio support)
+Download it from [python.org/downloads](https://www.python.org/downloads/).
+On Windows, tick **“Add Python to PATH”** during installation.
+
+### 2. Install Ollama + the AI models
+Download Ollama from [ollama.com/download](https://ollama.com/download) and install it.
+Then open a **new terminal** (so `ollama` is on PATH) and download the two models the assistant uses:
+```bash
+ollama pull qwen3:0.6b
+ollama pull qwen3:1.7b
 ```
+> ℹ️ On Windows, Ollama runs in the background (tray icon). Don't worry if it isn't running — the HUD now **starts it automatically** whenever it's needed.
+
+### 3. Clone this Repo
+```bash
 git clone https://github.com/adrxLV/J.A.R.V.I.S.AI.git
 cd J.A.R.V.I.S.AI
 ```
 
-### Install Ollama
-Download and install Ollama by following the instructions for your OS:
-
-- **Windows:** Download the installer from [Ollama's official website](https://ollama.ai/) and follow the setup process.
-- **Mac:** Run the following command:
-  ```bash
-  brew install ollama
-  ```
-- **Linux:** Run the following command:
-  ```bash
-  curl -fsSL https://ollama.ai/install.sh | sh
-  ```
-
-### Install the Mistral Model
-Once Ollama is installed, download the **Mistral** model by running on the command line:
-```bash
-ollama pull mistral
-```
-
-### Create a Virtual Environment
-```bash
-python -m venv ollama_assistant_env
-```
-
-### Activate the Virtual Environment
+### 4. Create a Virtual Environment
 - **Windows:**
   ```bash
+  py -3.13 -m venv ollama_assistant_env
+  ```
+- **Mac/Linux:**
+  ```bash
+  python3 -m venv ollama_assistant_env
+  ```
+> 💡 If `py -3.13` isn't found (or PyAudio fails to install on 3.13), use **3.12** instead: `py -3.12 -m venv ollama_assistant_env`.
+
+### 5. Activate the Virtual Environment
+- **Windows (Command Prompt):**
+  ```bash
   ollama_assistant_env\Scripts\activate
+  ```
+- **Windows (PowerShell):**
+  ```powershell
+  ollama_assistant_env\Scripts\Activate.ps1
   ```
 - **Mac/Linux:**
   ```bash
   source ollama_assistant_env/bin/activate
   ```
+You'll know it worked when your prompt is prefixed with `(ollama_assistant_env)`.
 
-### Install Required Dependencies
+### 6. Install the Dependencies
 ```bash
-pip install requests pyttsx3 SpeechRecognition python-decouple
+pip install -r requirements.txt
 ```
 
-### Configure Environment Variables
-Before running the assistant, you need to create a **.env** file in the project root directory with the following structure:
+### 7. Create Your .env File
+There's a template ready for you — just copy it and fill it in:
+- **Windows (Command Prompt):**
+  ```bash
+  copy .env.example .env
+  ```
+- **Mac/Linux:**
+  ```bash
+  cp .env.example .env
+  ```
+Then open `.env` in any editor and replace the placeholder values.
+
+Minimal setup — only these two lines are truly required (the rest have key-free fallbacks):
 ```
 USER=YourName
 BOTNAME=JARVIS
-EMAIL=your.email@example.com
-PASSWORD=YourSecurePassword123
-NEWS_API_KEY=your_news_api_key
-OPENWEATHER_APP_ID=your_openweather_api_key
-TMDB_API_KEY=your_tmdb_api_key
 ```
+All variables and where to get the free API keys are explained inside `.env.example` (weather, news, email, search, movies).
+
+### 8. Launch It
+- **Windows:** double-click `run.bat`
+- **Any OS:** `python main.py`
+
+The HUD opens, greets you out loud, and **starts listening for your voice right away**. By default it runs in **wake-word mode**: stand by, say **"Hey Jarvis"**, and it wakes to take your command.
+
+> 🧠 **Wake word first run:** the first time the HUD starts with wake-word ON, it downloads the small offline "hey jarvis" model automatically (one-time, needs internet). After that it works offline. If `openwakeword` isn't installed, it falls back to the online recognizer.
+
+> 🧪 **First-run check:** say *“What's the weather?”* or click **WEATHER** in the side panel. It works even with no API keys (key-free fallbacks).
 
 ---
 
 ## 🚀 Usage
-After installing, simply run the following command to start your AI assistant:
+
+### 🖥️ Desktop HUD (recommended)
+Start the **J.A.R.V.I.S. Desktop HUD** — a native Iron-Man / Mark-L style interface — with one double-click:
 ```bash
-python main.py
+run.bat
 ```
-Then, speak a command, and the assistant will process it using AI models and execute the corresponding action.
+or manually (either entry point opens the HUD):
+```bash
+ollama_assistant_env\Scripts\python.exe main.py
+```
+You get:
+
+- 🌀 Animated **HUD core** (spinning rings, pulsing glow, status states: LISTENING / THINKING / PROCESSING / SPEAKING + live waveform)
+- 💬 Streaming chat log with a **typewriter effect** (colored `You:` / `JARVIS:` entries)
+- 🎙️ **Voice input** — the HUD **starts listening automatically as soon as it opens** (right after its greeting), and you can re-trigger it with the MIC button. The **AUTO-MIC** toggle in the side panel turns this off/on (remembered between sessions)
+- 🗣️ **"Hey Jarvis" wake word** — the HUD stands by, listening continuously, and only wakes when you address it. Runs **fully offline** (openWakeWord), instant and free. Toggle with the **WAKE** button (remembered between sessions). When ON, it replaces the one-shot auto-listen
+- 🗣️ **Voice replies** via TTS (toggle with the SPEAKER button)
+- ⚙️ **STARTUP toggle** — the **STARTUP: ON/OFF** button switches **launching J.A.R.V.I.S. at Windows startup** on and off, right from inside the HUD (no .bat files needed). When **OFF**, it won't start on boot
+- 🚀 **Ollama auto-start** — if the local Ollama server is offline when the HUD opens (typical right after a reboot), J.A.R.V.I.S. starts it automatically in the background and waits until it's online, so your first question always gets answered
+- ⚡ **Quick actions** — weather, jokes, news, your IP, screenshots, opening apps, Wikipedia & YouTube search
+- 📊 Live **system metrics** (CPU / RAM / network) and status LEDs for Ollama / TTS / mic
+- 🎛️ **Model picker** in the side panel — switch between `qwen3:0.6b` (fast, light on CPU) and `qwen3:1.7b` (smarter) anytime; your choice is remembered between sessions
+- 🧠 **ULTRA THINK** — start a question with `ULTRATHINK:` (e.g. `ULTRATHINK: explain black holes`) to answer it with the bigger `qwen3:1.7b` model; everything else uses the fast `qwen3:0.6b`
+- ⟲ One-click conversation reset
+
+### 🗣️ Things you can say
+| You say… | J.A.R.V.I.S. does… |
+|---|---|
+| `open github in brave` / `search for best laptops in chrome` | Opens the app or searches in the browser you asked for |
+| `play despacito on youtube` | Plays it on YouTube |
+| `what's the weather` / `joke` / `news` / `my ip` | Weather (key-free), a joke, headlines, your IP |
+| `who am I` / `what is my name` | Tells you your name (from memory or .env) |
+| `my name is Sam` / `I like chess` / `my favourite colour is blue` | **Remembers it** and confirms |
+| `what do you know about me` | Recaps everything it remembers |
+| `forget everything` | Wipes its memory of you |
+| `ULTRATHINK: explain black holes` | Answers with the bigger, smarter model |
+
+### ⚡ Start J.A.R.V.I.S. Automatically at Boot (Windows)
+Want the assistant up and listening the moment you sit down — with **no console window** popping up?
+
+**Easiest way — inside the HUD:**
+1. Click the **STARTUP** button in the side panel until it reads **`STARTUP: ON`**.
+2. That's it — it creates the autostart entry for you. No .bat files and no admin rights needed (it falls back to the Startup-folder method automatically). Toggle it back to **`STARTUP: OFF`** anytime to stop launching at startup.
+
+**Manual way — one double-click:**
+1. Double-click **`enable_autostart.bat`**.
+2. That's it. J.A.R.V.I.S. now launches **silently** at every startup via `autostart.vbs` (`pythonw.exe`, no black console window) and **starts listening immediately**.
+
+The script tries the two methods in order:
+1. **Task Scheduler** (preferred) — a *"JARVIS Assistant"* task fires at boot and starts the HUD ~20 seconds in, once audio/network drivers are ready, right as your desktop appears. It's set to **auto-restart if the HUD ever crashes** (retries every 1 minute, up to 3 times) and never stops it for running too long, so J.A.R.V.I.S. stays up.
+2. **Startup folder** (automatic fallback) — if Task Scheduler needs admin rights you don't have, it creates a Startup-folder shortcut instead. Same visible behavior; it just launches at logon rather than at boot.
+
+To stop it from auto-starting, double-click **`disable_autostart.bat`** — it removes whichever method is active. The HUD's **STARTUP** button does the same thing in one click.
+
+> 🧠 No admin rights or stored password needed. Old entries are cleared first, so J.A.R.V.I.S. never launches twice.
+> 🔧 Want Task Scheduler specifically? Right-click `enable_autostart.bat` → **Run as administrator**. Inspect/edit the task anytime with `Win+R` → `taskschd.msc` → "JARVIS Assistant". Want the console visible for debugging? Run `run.bat` manually — that's still the normal (windowed) launcher.
+> 🚀 **Ollama comes along too:** the autostart entry launches the HUD, and the HUD then makes sure the Ollama server is running — so the AI answers the moment you ask, even right after a restart.
+
+### 🎛️ One interface: the Desktop HUD
+`main.py` is the main entry point — running it (or `run.bat`) pops up the Desktop HUD. The old terminal voice loop has been retired.
 
 ---
 
@@ -112,9 +199,22 @@ Then, speak a command, and the assistant will process it using AI models and exe
 │   ├──functions/                 # some functions to make the V.A. work;
 │   │   ├── online_ops.py         # Online services and operations;
 │   │   ├── os_ops.py             # Local operations;
-│   ├── main.py                   # Main entry point;
-│   ├── utils.py                  # Some utility info;
-│   ├── .env                      # Api keys storage, e-mail, username, bot name, etc.
+│   ├── main.py                   # Main entry point — launches the Desktop HUD;
+│   ├── gui.py                    # Desktop HUD interface (PyQt6, Mark-L style);
+│   ├── ai_memory.py              # Personal memory: learns name/interests/favourites, saves to ai_memory.json;
+│   ├── speech_engine.py          # Reliable SAPI5 text-to-speech (strips emoji before speaking);
+│   ├── ollama_streaming.py       # Streaming Ollama client (fast + big model constants);
+│   ├── ollama_manager.py         # Auto-starts the local Ollama server when it's offline;
+│   ├── autostart.py              # In-app STARTUP toggle (scheduled task / Startup-folder entry);
+│   ├── .env.example              # Template — copy to .env and fill in your values;
+│   ├── .gitignore                # Keeps .env, venv, caches & ai_memory.json out of git;
+│   ├── requirements.txt          # All Python dependencies — pip install -r requirements.txt;
+│   ├── run.bat                   # One double-click launcher (Windows, shows a console);
+│   ├── autostart.vbs             # Silent launcher fallback (pythonw, no console; used when the venv is missing);
+│   ├── enable_autostart.bat      # Registers a Task Scheduler task that starts the HUD at boot;
+│   ├── enable_startup_task.ps1   # PowerShell helper for the task (crash-restart settings);
+│   ├── disable_autostart.bat     # Deletes the scheduled task again;
+│   ├── .env                      # Your real secrets & settings (gitignored, never committed)
 ├──
 ```
 ---
@@ -127,8 +227,8 @@ Then, speak a command, and the assistant will process it using AI models and exe
       </a>
     </td>
     <td align="center">
-      <a href="https://mistral.ai">
-        <img src="https://framerusercontent.com/images/DLqZSWwUcLevgxcdron1gb0WZ7c.png" alt="Mistral" style="width: 200px; height: 200px;">
+      <a href="https://ollama.com/library/qwen3">
+        <img src="https://ollama.com/public/ollama.png" alt="Qwen 3" style="width: 200px; height: 200px;">
       </a>
     </td>
   </tr>

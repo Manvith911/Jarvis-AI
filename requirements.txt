@@ -1,0 +1,21 @@
+# J.A.R.V.I.S. AI Assistant — Python dependencies
+# Install with:  pip install -r requirements.txt
+#
+# Tested on Windows with Python 3.13.
+# On Python 3.13+ PyAudio needs the `audioop-lts` backport (included below).
+
+requests
+pyttsx3
+SpeechRecognition
+python-decouple
+wikipedia
+pywhatkit
+PyAudio
+audioop-lts
+PyQt6
+psutil
+ddgs
+
+# Offline wake-word detection ('hey jarvis') — models download on first run.
+# If you skip this, the wake word falls back to online speech recognition.
+openwakeword

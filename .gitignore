@@ -1,0 +1,39 @@
+# ── Secrets & environment ────────────────────────────────────────
+# Never commit these — copy .env.example to .env instead
+.env
+.env.local
+.env.*.local
+
+# ── Python ────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ollama_assistant_env/
+
+# ── App-generated / user-specific data ───────────────────────────
+# GUI preferences (speaker toggle, chosen model, auto-mic)
+gui_settings.json
+# Saved AI conversation history
+ai_conversation_history.txt
+# Personal facts JARVIS remembers about the user (name, interests, favorites)
+ai_memory.json
+# Silent-autostart log (pythonw writes here when launched without a console)
+jarvis_autostart.log
+
+# ── Editors & OS ─────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+Thumbs.db
+Desktop.ini
+.DS_Store

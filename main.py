@@ -1,21 +1,53 @@
 import threading
 import time
 import requests
+import re
 import pyttsx3
 import speech_recognition as sr
 from decouple import config
 from datetime import datetime
 import os
+import sys
 
-from ollama_streaming import StreamingOllama
+# Windows console: print emoji/unicode without crashing
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+# pythonw.exe (silent autostart) has NO console, so sys.stdout/stderr are
+# None there and any print() would crash the app. Send them to a log file
+# (truncated each launch) so silent failures stay diagnosable; if the log
+# can't be opened, fall back to devnull rather than crash at import.
+if sys.stdout is None or sys.stderr is None:
+    _sink = None
+    try:
+        _log_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "jarvis_autostart.log")
+        _sink = open(_log_path, "w", encoding="utf-8")
+    except Exception:
+        pass
+    if _sink is None:
+        _sink = open(os.devnull, "w", encoding="utf-8")
+    if sys.stdout is None:
+        sys.stdout = _sink
+    if sys.stderr is None:
+        sys.stderr = _sink
+
+from ollama_streaming import StreamingOllama, BIG_MODEL, split_deep_marker
+from ai_memory import (
+    apply_facts, clear_memory, confirmation_text, extract_facts,
+    load_memory, memory_snippet, memory_summary, save_memory,
+)
 from functions.online_ops import (
-    find_my_ip, get_latest_news, get_random_joke,
+    find_my_ip, get_city_from_ip, get_latest_news, get_random_joke,
     get_weather_report, play_on_youtube,
     search_on_wikipedia, search_on_google
 )
 from functions.os_ops import (
-    open_calculator, open_camera, open_cmd, open_notepad,
-    open_discord, take_screenshot
+    open_application, open_in_browser, parse_open_command,
+    search_url, strip_politeness, take_screenshot
 )
 
 HISTORY_FILE = "ai_conversation_history.txt"
@@ -32,24 +64,61 @@ def append_history(summary):
     with open(HISTORY_FILE, "a", encoding="utf-8") as f:
         f.write(summary.strip() + "\n\n")
 
+
+_CITY_RE = re.compile(
+    r"(?:weather|temperature)\s+(?:in|at|for)\s+(.+?)\s*$",
+    re.IGNORECASE,
+)
+
+
+def parse_city_from_query(query):
+    """Pull a city out of 'weather in london today' or "what's the weather
+    today in new york". Returns None when no city is mentioned."""
+    m = _CITY_RE.search(query or "")
+    if not m:
+        return None
+    city = m.group(1).strip()
+    # drop trailing words that aren't part of the city name
+    city = re.sub(
+        r"\b(today|right now|now|please|tomorrow|this week|this afternoon|"
+        r"this evening|tonight|currently)\b.*$",
+        "", city, flags=re.IGNORECASE).strip()
+    return city or None
+
 class Speech:
-    """Text-to-speech system."""
+    """Text-to-speech system (SAPI5 via win32com, pyttsx3 as fallback)."""
 
     def __init__(self):
+        self.is_speaking = False
+        self.speech_lock = threading.Lock()
+        self.tts_available = False
+        self._sapi = None
+        self._engine = None
         try:
-            self.engine = pyttsx3.init('sapi5')
-            self.engine.setProperty('rate', 180)
-            self.engine.setProperty('volume', 1.0)
-            voices = self.engine.getProperty('voices')
+            from speech_engine import SapiSpeech, strip_for_speech
+            self._sapi = SapiSpeech(rate=1)
+            if self._sapi.ok:
+                self.tts_available = True
+                print("TTS ready")
+                return
+            print(f"SAPI5 unavailable ({self._sapi.error}); trying pyttsx3...")
+        except Exception as e:
+            print(f"TTS init error: {e}")
+        # fallback: pyttsx3 (on some systems only the first utterance
+        # produces audio — the SAPI5 path above is preferred)
+        try:
+            import pyttsx3
+            self._engine = pyttsx3.init('sapi5')
+            self._engine.setProperty('rate', 180)
+            self._engine.setProperty('volume', 1.0)
+            voices = self._engine.getProperty('voices')
             if voices and len(voices) > 1:
-                self.engine.setProperty('voice', voices[2].id)
+                self._engine.setProperty('voice', voices[-1].id)
             self.tts_available = True
             print("TTS ready")
         except Exception as e:
             print(f"TTS failed: {e}")
             self.tts_available = False
-        self.is_speaking = False
-        self.speech_lock = threading.Lock()
 
     def speak(self, text):
         if not text or not text.strip():
@@ -61,8 +130,11 @@ class Speech:
             try:
                 self.is_speaking = True
                 print(f"Speaking: {text}")
-                self.engine.say(text)
-                self.engine.runAndWait()
+                if self._sapi is not None:
+                    self._sapi.speak(text)
+                else:
+                    self._engine.say(strip_for_speech(text))
+                    self._engine.runAndWait()
             except Exception as e:
                 print(f"TTS error: {e}")
             finally:
@@ -73,7 +145,6 @@ class Speech:
 
 class PersonalizedAssistant:
     def __init__(self, model_name, botname, history_text):
-        self.username = config('USER')
         self.botname = botname
         self.tts = Speech()
         self.is_processing = False
@@ -81,13 +152,23 @@ class PersonalizedAssistant:
         self.ollama = StreamingOllama(model=self.model)
         self.history = []
         self.history_text = history_text
+        # Persistent personal memory — facts the user shared in past chats
+        # (name, interests, favorites...) override the .env fallback name.
+        self.memory = load_memory()
+        mem_name = self.memory.get("name")
+        self.username = mem_name or config('USER', default='Friend')
         # FRIENDLY, CASUAL, HELPFUL PROMPT
         self.prompt_template = (
             f"{self.history_text}\n"
-            f"You are {self.botname}, an AI assistant who is also a friendly sidekick for {self.username}. "
+            "You are {botname}, an AI assistant who is also a friendly sidekick for {username}. "
+            "The person talking to you is the user, and their name is {username}. "
             "Be warm, casual, and supportive—like a buddy who always has their back. "
             "Your tone should be fun, easygoing, and helpful, not too formal or robotic. "
-            "Keep your answers short (1-2 sentences), unless more detail is needed. Don't be afraid to add a little personality, a joke, or a friendly comment now and then.\n"
+            "Keep your answers short (1-2 sentences), unless more detail is needed. Don't be afraid to add a little personality, a joke, or a friendly comment now and then. "
+            "IMPORTANT: when the user asks about themselves (like \"who am I\" or \"what is my name\"), "
+            "answer about the USER ({username}) — never describe yourself for those questions. "
+            "Only describe yourself when they ask \"who are you\".\n"
+            "{memory}\n"
             "{ongoing}\nUser: {question}\nAI:"
         )
 
@@ -115,10 +196,8 @@ class PersonalizedAssistant:
                 print(f"Recognition error: {e}")
         return None
 
-    def chat(self, question):
-        """Stream reply and speak by sentence or chunk."""
-        self.is_processing = True
-        print(f"\n{self.botname}: ", end="", flush=True)
+    def build_prompt(self, question):
+        """Build the full prompt for a question, adding Google context when requested."""
         ongoing = "\n".join(self.history[-6:])
 
         # Google context addition
@@ -129,33 +208,79 @@ class PersonalizedAssistant:
             google_results = search_on_google(google_query)
             google_context = f"\n[Google info about '{google_query}']:\n{google_results}\n"
 
-        prompt = self.prompt_template.format(
+        return self.prompt_template.format(
+            botname=self.botname,
+            username=self.username,
+            memory=memory_snippet(self.memory),
             ongoing=ongoing + google_context,
             question=question
         )
 
+    def generate_reply(self, question, speak=True, paced=True):
+        """Yield reply tokens one at a time, speaking them in sentence chunks.
+
+        A generator so callers (CLI, GUI) can stream tokens as they arrive.
+        Speech starts as soon as a phrase or sentence forms: the buffer flushes
+        on sentence punctuation (period / exclamation / question), on softer
+        breaks (commas, semicolons, colons, dashes, newlines) once a minimum
+        length is reached, or after ``max_chunk`` characters so a long run of
+        unpunctuated text never delays audio for long. When ``paced`` is True
+        the generator waits for each chunk to finish speaking (good for the
+        CLI); set it to False when another thread owns the speech queue so
+        tokens flow at model speed.
+        """
+        prompt = self.build_prompt(question)
         buffer = ""
-        sentence_endings = {".", "!", "?"}
-        max_chunk = 122
+        hard_ends = {".", "!", "?"}
+        soft_ends = {",", ";", ":", "\n", "\u2014", "\u2013"}  # , ; : newline — –
+        min_chunk = 14     # don't speak tiny fragments like "Okay," alone
+        max_chunk = 100    # force a flush so audio never lags far behind
 
         def speak_chunk(chunk):
             self.tts.speak(chunk)
-            while self.tts.is_busy():
-                time.sleep(0.07)
+            if paced:
+                while self.tts.is_busy():
+                    time.sleep(0.07)
 
-        reply = ""
+        def flush(force=False):
+            nonlocal buffer
+            chunk = buffer.strip()
+            buffer = ""
+            if chunk and (force or len(chunk) >= min_chunk):
+                speak_chunk(chunk)
+
         for token in self.ollama.generate_stream(prompt):
             print(token, end="", flush=True)
-            buffer += token
-            reply += token
-            if (buffer and buffer[-1] in sentence_endings) or len(buffer) > max_chunk:
-                chunk = buffer.strip()
-                if chunk:
-                    speak_chunk(chunk)
-                buffer = ""
-        if buffer.strip():
-            speak_chunk(buffer.strip())
+            yield token
+            if speak:
+                buffer += token
+                last = buffer[-1] if buffer else ""
+                if last in hard_ends:
+                    flush(force=True)          # complete sentence — always speak
+                elif last in soft_ends and len(buffer) >= min_chunk:
+                    flush()                    # natural pause, long enough
+                elif len(buffer) >= max_chunk:
+                    flush(force=True)          # long run — don't stall audio
+        if speak and buffer.strip():
+            flush(force=True)
 
+    def chat(self, question):
+        """Stream reply and speak by sentence or chunk.
+
+        A question prefixed with ULTRATHINK (e.g. "ULTRATHINK: explain X")
+        is answered by the bigger model and switched back afterwards.
+        """
+        self.is_processing = True
+        old_model = self.ollama.model
+        question, deep = split_deep_marker(question)
+        if deep and old_model != BIG_MODEL:
+            self.ollama.model = BIG_MODEL
+            self.speak("Ultra Think mode on — big brain engaged!")
+        print(f"\n{self.botname}: ", end="", flush=True)
+        try:
+            reply = "".join(self.generate_reply(question, speak=True))
+        finally:
+            self.ollama.model = old_model
         self.history.append(f"User: {question}")
         self.history.append(f"AI: {reply.strip()}")
         self.is_processing = False
@@ -168,13 +293,20 @@ class PersonalizedAssistant:
         while self.tts.is_busy():
             time.sleep(0.1)
 
-    def weather_report(self):
+    def weather_report(self, query=None):
+        """Report the weather for a city mentioned in the query, or the
+        location detected from the public IP. Never fails hard: a key-free
+        wttr.in fallback answers even with no API keys configured."""
         try:
             self.is_processing = True
-            ip_address = find_my_ip()
-            city = requests.get(f"https://ipapi.co/{ip_address}/city/", timeout=5).text
+            city = parse_city_from_query(query) if query else None
+            if not city:
+                city = get_city_from_ip()
             weather, temperature, feels_like = get_weather_report(city)
-            report = f"It's {temperature}°C in {city} and feels like {feels_like}. {weather.capitalize()} vibes today!"
+            place = city or "your area"
+            # get_weather_report already includes the ℃ symbol
+            report = (f"It's {temperature} in {place} and feels like "
+                      f"{feels_like}. {weather.capitalize()} vibes today!")
             self.speak(report)
         except Exception as e:
             self.speak("Oops, couldn't get the weather right now. Blame the clouds!")
@@ -182,19 +314,24 @@ class PersonalizedAssistant:
         finally:
             self.is_processing = False
 
-    def greet(self):
-        hour = datetime.now().hour
-        if 6 <= hour < 12:
-            greeting = f"Morning, {self.username}! ☀️"
-        elif 12 <= hour < 16:
-            greeting = f"Hey, good afternoon {self.username}!"
-        elif 16 <= hour < 19:
-            greeting = f"Evening {self.username}! Hope your day's going awesome."
-        else:
-            greeting = f"Hey night owl {self.username}!"
-        self.speak(greeting)
-        time.sleep(1)
-        self.speak(f"I'm {self.botname}, your trusty sidekick. What are we up to today?")
+    def _handle_open_command(self, kind, target, browser):
+        """Execute a parsed open/search command with spoken feedback."""
+        where = f" in {browser}" if browser else ""
+        if kind == "search":
+            target = (target or "").strip()
+            if not target:
+                return
+            self.speak(f"Searching for {target}{where} — hold on!")
+            ok = open_in_browser(search_url(target), browser)
+            if not ok:
+                self.speak(
+                    f"Couldn't find {browser} on this machine. Check your install?")
+            return
+        # kind == "app": an application or a website
+        self.speak(f"Opening {target}{where} — on it!")
+        ok = open_application(target, browser)
+        if not ok:
+            self.speak(f"Hmm, I couldn't find {target} on this machine.")
 
     def summarize_and_save_history(self):
         """Summarize conversation and save to file."""
@@ -215,22 +352,74 @@ class PersonalizedAssistant:
 
     def handle_command(self, query):
         """Handle non-chat commands. Return True if handled, else False."""
+        lowered = (query or "").lower()
+
+        # 0. identity questions — the small local model often describes ITSELF
+        # when asked "who am I", so answer these directly from the user's name.
+        idq = strip_politeness(lowered)
+        if re.search(
+            r"\bwho (am|i am)\b|\bwhat('s| is) my name\b|"
+            r"do you know (who i am|my name)|tell me my name",
+            idq,
+            flags=re.IGNORECASE,
+        ):
+            self.speak(
+                f"You're {self.username}, of course! My favourite human. "
+                f"Anything for you, {self.username}?"
+            )
+            return True
+
+        # 0b. personal memory — recall or wipe the facts JARVIS knows
+        if re.search(
+            r"what do you know about me|what do you remember about me|"
+            r"do you remember (me|my name)",
+            idq,
+        ):
+            self.speak(memory_summary(self.memory))
+            return True
+
+        # forget command — but never fire on negated phrasings like
+        # "don't forget about me" (that's an ordinary chat message)
+        if not re.search(
+            r"\b(don't|dont|do not|never)\s+forget\b", idq
+        ):
+            if re.search(
+                r"\bforget everything\b|\bclear (your|the) memory\b|"
+                r"\berase (your|the) memory\b|\bforget about me\b",
+                idq,
+            ):
+                if clear_memory():
+                    self.memory = {}
+                    self.speak("Memory wiped! I know nothing about you again. "
+                               "Refreshing!")
+                else:
+                    self.speak("Couldn't clear my memory. Try again?")
+                return True
+
+        # 1. natural-language launcher: "open github in brave",
+        #    "search for best laptops in chrome", "can you open notepad"...
+        parsed = parse_open_command(lowered)
+        if parsed:
+            try:
+                self._handle_open_command(*parsed)
+            except Exception as e:
+                print(f"Open command error: {e}")
+                self.speak("Couldn't open that. My bad!")
+            return True
+
+        # 2. fixed quick commands
         commands = {
-            'open notepad': (open_notepad, "On it! Notepad coming right up."),
-            'open discord': (open_discord, "Firing up Discord for you."),
-            'open command prompt': (open_cmd, "Opening command prompt, let's get nerdy!"),
-            'open cmd': (open_cmd, "Opening command prompt, let's get nerdy!"),
-            'open camera': (open_camera, "Cheese! Turning on the camera."),
-            'open calculator': (open_calculator, "Math time! Calculator's open."),
-            'ip address': (lambda: self.speak(f'Your IP Address is {find_my_ip()} (don\'t worry, I won\'t leak it!)'), None),
-            'weather': (self.weather_report, None),
+            'ip address': (lambda: self.speak(
+                f'Your IP Address is {find_my_ip()} (don\'t worry, I won\'t leak it!)'), None),
+            'my ip': (lambda: self.speak(
+                f'Your IP Address is {find_my_ip()} (don\'t worry, I won\'t leak it!)'), None),
+            'weather': (lambda: self.weather_report(query), None),
             'joke': (lambda: self.speak(get_random_joke()), None),
             'news': (self.report_news, None),
             'screenshot': (take_screenshot, "Screenshot time! Hold still..."),
         }
-
         for key, (func, announce) in commands.items():
-            if key in query:
+            if key in lowered:
                 if announce:
                     self.speak(announce)
                 try:
@@ -240,7 +429,18 @@ class PersonalizedAssistant:
                     print(f"Command error ({key}): {e}")
                 return True
 
-        if 'wikipedia' in query:
+        # 3. "play <song> on youtube" -> play it right away (no follow-up Q)
+        clean = strip_politeness(query)
+        if re.match(r"^(please\s+)?play\s+", clean, flags=re.IGNORECASE):
+            video = re.sub(r"^(please\s+)?play\s+", "", clean,
+                           flags=re.IGNORECASE)
+            video = re.sub(r"\s+(on\s+)?youtube\s*$", "", video).strip()
+            if video and video.lower() != clean.lower():
+                self.speak(f"Playing {video} on YouTube—enjoy!")
+                play_on_youtube(video)
+                return True
+
+        if 'wikipedia' in lowered:
             self.speak('What should I look up on Wikipedia, friend?')
             self.wait_for_speech_completion()
             search_query = self.listen()
@@ -253,7 +453,7 @@ class PersonalizedAssistant:
                     self.speak("Wikipedia's not playing nice right now.")
             return True
 
-        if 'youtube' in query:
+        if 'youtube' in lowered:
             self.speak('What do you want to jam to on YouTube?')
             self.wait_for_speech_completion()
             video = self.listen()
@@ -262,11 +462,28 @@ class PersonalizedAssistant:
                 play_on_youtube(video)
             return True
 
-        if 'bye' in query or 'goodbye' in query:
+        if 'bye' in lowered or 'goodbye' in lowered:
             self.speak(f'See ya, {self.username}! Ping me anytime!')
             self.summarize_and_save_history()
             time.sleep(2)
             exit(0)
+
+        # 6. personal memory — learn facts the user shares ("my name is X",
+        #    "i like football") and save them for future sessions. Runs last
+        #    so every real command above takes precedence.
+        learned = extract_facts(idq)
+        if learned:
+            applied = apply_facts(self.memory, learned)
+            if applied:
+                save_memory(self.memory)
+                if self.memory.get("name"):
+                    self.username = self.memory["name"]
+                self.speak(confirmation_text(applied))
+            else:
+                # nothing new (already known, or at the interest cap) —
+                # acknowledge instead of silence
+                self.speak("Got it!")
+            return True
 
         return False
 
@@ -279,28 +496,8 @@ class PersonalizedAssistant:
         except Exception as e:
             self.speak("Couldn't fetch news. I blame the internet goblins!")
 
-    def run(self):
-        print(f"Starting {self.botname}...")
-        self.greet()
-        while True:
-            try:
-                self.wait_for_speech_completion()
-                query = self.listen()
-                if not query:
-                    continue
-                if not self.handle_command(query):
-                    self.chat(query)
-            except KeyboardInterrupt:
-                self.speak("Alright, catch you later!")
-                self.summarize_and_save_history()
-                break
-            except Exception as e:
-                print(f"Error: {e}")
-                self.speak("Yikes, something went wrong. Want to try again?")
-
 if __name__ == '__main__':
-    model = "mistral"  # Or "llama3", etc.
-    botname = config('BOTNAME')
-    history_text = load_history()
-    assistant = PersonalizedAssistant(model, botname, history_text)
-    assistant.run()
+    # The Desktop HUD is the only interface now — running `python main.py`
+    # pops up the HUD (gui.py) instead of the old terminal voice loop.
+    from gui import main as gui_main
+    gui_main()
