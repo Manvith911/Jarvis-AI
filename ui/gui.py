@@ -5,7 +5,7 @@ An Iron-Man / Mark-L inspired native desktop interface for the Ollama-powered
 voice assistant. Replaces the old browser (web) UI with a PyQt6 HUD.
 
 Run it with:
-    ollama_assistant_env\\Scripts\\python.exe gui.py
+    ollama_assistant_env\\Scripts\\python.exe main.py
 """
 
 import json
@@ -38,8 +38,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from main import PersonalizedAssistant, load_history
-from ollama_streaming import BIG_MODEL, DEFAULT_MODEL, split_deep_marker
+from core.assistant import PersonalizedAssistant, load_history
+from core.ollama import BIG_MODEL, DEFAULT_MODEL, split_deep_marker
 from functions.online_ops import (
     find_my_ip, get_city_from_ip, get_latest_news, get_random_joke,
     get_weather_report, have_internet, play_on_youtube, search_on_wikipedia,
@@ -48,11 +48,11 @@ from functions.os_ops import (
     looks_like_command, open_calculator, open_camera, open_cmd,
     open_notepad, take_screenshot,
 )
-from autostart import autostart_enabled
-from ollama_manager import ensure_ollama, is_online
+from services.ollama_manager import ensure_ollama, is_online
+from utils.autostart import autostart_enabled
 
 try:
-    import phone_link
+    from services import phone_link
 except Exception as e:
     print(f"[gui] phone link unavailable: {e}")
     phone_link = None
@@ -67,9 +67,10 @@ except Exception:
 MODELS = list(dict.fromkeys([DEFAULT_MODEL, BIG_MODEL]))
 OLLAMA_URL = "http://localhost:11434"
 
-SETTINGS_FILE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "gui_settings.json"
-)
+# Settings stay at the project root (covered by .gitignore) so they
+# survive code moves.
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SETTINGS_FILE = os.path.join(_PROJECT_ROOT, "gui_settings.json")
 
 
 def _load_settings():
@@ -676,7 +677,7 @@ class GuiSpeech:
         return errs
 
     def _run(self):
-        from speech_engine import SapiSpeech
+        from core.speech import SapiSpeech
         speech = SapiSpeech(rate=1)
         if speech.ok:
             self.tts_available = True
@@ -909,7 +910,7 @@ class AssistantWorker(QObject):
             return
         self.wake_active = True
         try:
-            from wake_word import WakeWordListener
+            from core.wake_word import WakeWordListener
             self.wake = WakeWordListener(
                 botname=self.assistant.botname,
                 on_wake=self._on_wake_detected,
@@ -942,12 +943,16 @@ class AssistantWorker(QObject):
     def _on_wake_detected(self):
         """Wake word heard: capture one full command, then let the normal
         flow process it. The listener stays paused while that runs and
-        resumes listening afterwards."""
+        resumes listening afterwards. Never gets stuck: even if the mic
+        fails, the wake loop is unpaused and the GUI is told we're done."""
         self.wake_detected.emit()
         self._wake_capture = True
         self.status.emit("LISTENING")
         try:
             query = self.assistant.listen()
+        except Exception as e:
+            print(f"[gui wake] listen error: {e}")
+            query = None
         finally:
             self._wake_capture = False
         self.listening_finished.emit(query)
@@ -1575,7 +1580,7 @@ class MainWindow(QMainWindow):
             else "Disabling start at Windows startup...", "sys")
 
         def job():
-            from autostart import disable_autostart, enable_autostart
+            from utils.autostart import disable_autostart, enable_autostart
             try:
                 ok, msg = enable_autostart() if enable else disable_autostart()
             except Exception as e:

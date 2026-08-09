@@ -1,5 +1,4 @@
 import os
-import re
 import time
 import types
 import unittest
@@ -7,7 +6,7 @@ from unittest.mock import patch
 
 from _bootstrap import FakeTTS
 
-import phone_link
+from services import phone_link
 
 
 class FakeAssistant:
@@ -90,7 +89,7 @@ class ChatHandlerTests(unittest.TestCase):
 
     def test_plain_chat_streams_reply(self):
         s = self.make_server()
-        with patch("phone_link.is_online", return_value=True):
+        with patch("services.phone_link.is_online", return_value=True):
             text = collect(s, "hello")
         self.assertEqual(text, "hi there friend!")
         self.assertFalse(s.assistant.is_processing)
@@ -120,7 +119,7 @@ class ChatHandlerTests(unittest.TestCase):
             calls["paced"] = paced
             yield from real(question, speak, paced)
 
-        with patch("phone_link.is_online", return_value=True), \
+        with patch("services.phone_link.is_online", return_value=True), \
              patch.object(s.assistant, "generate_reply", recorder):
             text = collect(s, "hello")
         self.assertEqual(text, "hi there friend!")
@@ -136,7 +135,7 @@ class ChatHandlerTests(unittest.TestCase):
             s.assistant.tts.speak("Give me a sec — looking that up for you!")
             yield from real(question, speak, paced)
 
-        with patch("phone_link.is_online", return_value=True), \
+        with patch("services.phone_link.is_online", return_value=True), \
              patch.object(s.assistant, "generate_reply", gen_with_announce):
             text = collect(s, "hello")
         self.assertTrue(text.startswith("Give me a sec"))
@@ -167,8 +166,8 @@ class ChatHandlerTests(unittest.TestCase):
 
     def test_wikipedia_followup(self):
         s = self.make_server()
-        with patch("phone_link.have_internet", return_value=True), \
-             patch("phone_link.search_on_wikipedia",
+        with patch("services.phone_link.have_internet", return_value=True), \
+             patch("services.phone_link.search_on_wikipedia",
                    return_value="Albert Einstein was a physicist."):
             q1 = collect(s, "wikipedia")
             self.assertIn("What should I look up", q1)
@@ -178,7 +177,7 @@ class ChatHandlerTests(unittest.TestCase):
 
     def test_offline_wikipedia_followup(self):
         s = self.make_server()
-        with patch("phone_link.have_internet", return_value=False):
+        with patch("services.phone_link.have_internet", return_value=False):
             q1 = collect(s, "wikipedia")
             self.assertIn("What should I look up", q1)
             q2 = collect(s, "einstein")
@@ -186,9 +185,9 @@ class ChatHandlerTests(unittest.TestCase):
 
     def test_youtube_followup(self):
         s = self.make_server()
-        with patch("phone_link.have_internet", return_value=True), \
-             patch("phone_link.play_on_youtube") as play, \
-             patch("phone_link.is_online", return_value=True):
+        with patch("services.phone_link.have_internet", return_value=True), \
+             patch("services.phone_link.play_on_youtube") as play, \
+             patch("services.phone_link.is_online", return_value=True):
             q1 = collect(s, "youtube")
             self.assertIn("jam to", q1)
             q2 = collect(s, "despacito")
@@ -197,8 +196,8 @@ class ChatHandlerTests(unittest.TestCase):
 
     def test_deep_marker_swaps_and_restores_model(self):
         s = self.make_server()
-        with patch("phone_link.is_online", return_value=True), \
-             patch("phone_link.BIG_MODEL", "qwen3:14b"):
+        with patch("services.phone_link.is_online", return_value=True), \
+             patch("services.phone_link.BIG_MODEL", "qwen3:14b"):
             text = collect(s, "ULTRATHINK: explain black holes")
         self.assertEqual(text, "hi there friend!")
         self.assertEqual(s.assistant.ollama.model, "qwen3:1.7b")
@@ -207,7 +206,7 @@ class ChatHandlerTests(unittest.TestCase):
         s = self.make_server()
         with patch.object(s.assistant, "generate_reply",
                           side_effect=RuntimeError("boom")), \
-             patch("phone_link.is_online", return_value=True):
+             patch("services.phone_link.is_online", return_value=True):
             text = collect(s, "hello")
         self.assertIn("went wrong", text)
         self.assertFalse(s.assistant.is_processing)
@@ -239,7 +238,7 @@ class FlaskRouteTests(unittest.TestCase):
         self.assertEqual(r.get_json()["botname"], "JARVIS")
 
     def test_chat_endpoint(self):
-        with patch("phone_link.is_online", return_value=True):
+        with patch("services.phone_link.is_online", return_value=True):
             r = self.client.post("/api/chat",
                                  json={"message": "hello", "session": "t"})
         self.assertEqual(r.status_code, 200)

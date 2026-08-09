@@ -16,7 +16,9 @@ import os
 import subprocess
 
 TASK_NAME = "JARVIS Assistant"
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# The launcher scripts (autostart.vbs, enable_startup_task.ps1) live at the
+# project root — this module sits one level down in utils/.
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VBS = os.path.join(BASE_DIR, "autostart.vbs")
 
 _STARTUP_FOLDER = os.path.join(

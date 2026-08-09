@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import ai_memory
+import core.memory as ai_memory
 
 
 class MemoryTests(unittest.TestCase):

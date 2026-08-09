@@ -14,8 +14,10 @@ import json
 import os
 import re
 
-MEMORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           "ai_memory.json")
+# The memory file lives at the project root so it survives code moves
+# and stays covered by .gitignore.
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MEMORY_FILE = os.path.join(_PROJECT_ROOT, "ai_memory.json")
 
 # ---------------------------------------------------------------------------
 # Fact extraction patterns. Each (key, [regexes]) — regexes are matched with

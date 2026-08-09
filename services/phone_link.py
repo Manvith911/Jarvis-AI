@@ -23,7 +23,7 @@ only on the phone — the desktop stays quiet.
 Run it from the GUI — a "PHONE LINK" button in the HUD starts the server
 and shows the QR code. This module can also be used standalone:
 
-    from phone_link import PhoneLinkServer
+    from services.phone_link import PhoneLinkServer
     server = PhoneLinkServer(assistant)   # assistant = PersonalizedAssistant
     server.start()
     print(server.url)
@@ -38,14 +38,14 @@ import threading
 
 from decouple import config
 
-from ollama_streaming import BIG_MODEL, split_deep_marker
+from core.ollama import BIG_MODEL, split_deep_marker
 from functions.online_ops import (
     have_internet, play_on_youtube, search_on_wikipedia,
 )
 from functions.os_ops import looks_like_command
 
 try:
-    from ollama_manager import ensure_ollama, is_online
+    from services.ollama_manager import ensure_ollama, is_online
 except Exception:  # pragma: no cover - only used when streaming chat
     def is_online():
         return True
@@ -119,10 +119,11 @@ def get_lan_ip():
         return "127.0.0.1"
 
 
-_CERT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          "phone_link_cert.pem")
-_KEY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                         "phone_link_key.pem")
+# Cert files stay at the project root (covered by .gitignore) so they
+# survive code moves and are never regenerated unnecessarily.
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_CERT_FILE = os.path.join(_PROJECT_ROOT, "phone_link_cert.pem")
+_KEY_FILE = os.path.join(_PROJECT_ROOT, "phone_link_key.pem")
 
 
 def _cert_contains_ip(cert_path, ip):

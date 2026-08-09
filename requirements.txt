@@ -8,7 +8,6 @@ requests
 pyttsx3
 SpeechRecognition
 python-decouple
-wikipedia
 pywhatkit
 PyAudio
 audioop-lts
@@ -25,6 +24,13 @@ qrcode[pil]
 # browser use its microphone for voice input.
 cryptography
 
-# Offline wake-word detection ('hey jarvis') — models download on first run.
-# If you skip this, the wake word falls back to online speech recognition.
+# Offline wake-word detection ('hey jarvis'). numpy/onnxruntime are listed
+# explicitly because the wake-word engine imports them directly. The pretrained
+# model (~1.2 MB) is downloaded automatically on first run (see core/wake_word.py).
+# If you skip openwakeword, the wake word falls back to online speech recognition.
 openwakeword
+numpy
+onnxruntime
+
+# Note: Wikipedia lookups use the free MediaWiki API directly (via `requests`),
+# so the old `wikipedia` package is no longer needed.

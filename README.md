@@ -247,17 +247,23 @@ Want J.A.R.V.I.S. in your pocket? The HUD starts a tiny local web server (a **PH
 ## 📜 Project Structure
 ```
 ├── J.A.R.V.I.S.AI/
-│   ├──functions/                 # some functions to make the V.A. work;
-│   │   ├── online_ops.py         # Online services and operations;
-│   │   ├── os_ops.py             # Local operations;
 │   ├── main.py                   # Main entry point — launches the Desktop HUD;
-│   ├── gui.py                    # Desktop HUD interface (PyQt6, Mark-L style);
-│   ├── phone_link.py             # Phone link — local web server + QR code so your phone can use J.A.R.V.I.S. on the same Wi-Fi;
-│   ├── ai_memory.py              # Personal memory: learns name/interests/favourites, saves to ai_memory.json;
-│   ├── speech_engine.py          # TTS: SAPI5 engine + synchronous Speech wrapper (strips emoji before speaking);
-│   ├── ollama_streaming.py       # Streaming Ollama client (fast + big model constants);
-│   ├── ollama_manager.py         # Auto-starts the local Ollama server when it's offline;
-│   ├── autostart.py              # In-app STARTUP toggle (scheduled task / Startup-folder entry);
+│   ├── core/                     # Assistant brain;
+│   │   ├── assistant.py          # PersonalizedAssistant: prompts, commands, chat, history;
+│   │   ├── speech.py             # TTS: SAPI5 engine + synchronous Speech wrapper (strips emoji before speaking);
+│   │   ├── memory.py             # Personal memory: learns name/interests/favourites, saves to ai_memory.json;
+│   │   ├── wake_word.py          # 'Hey Jarvis' wake word (openWakeWord — model auto-downloads on first run) + online fallback;
+│   │   └── ollama.py             # Streaming Ollama client (fast + big model constants);
+│   ├── functions/                # Action capabilities;
+│   │   ├── online_ops.py         # Online services: weather, news, Wikipedia (MediaWiki API), web search, jokes, IP;
+│   │   └── os_ops.py             # Local operations: launch apps/browsers, screenshots;
+│   ├── services/                 # Background services;
+│   │   ├── ollama_manager.py     # Auto-starts the local Ollama server when it's offline;
+│   │   └── phone_link.py         # Local web server + QR code so your phone can use J.A.R.V.I.S. on the same Wi-Fi;
+│   ├── ui/                       # User interfaces;
+│   │   └── gui.py                # Desktop HUD interface (PyQt6, Mark-L style);
+│   ├── utils/                    # Small utilities;
+│   │   └── autostart.py          # In-app STARTUP toggle (scheduled task / Startup-folder entry);
 │   ├── .env.example              # Template — copy to .env and fill in your values;
 │   ├── .gitignore                # Keeps .env, venv, caches, screenshots & ai_memory.json out of git;
 │   ├── screenshots/              # PNG captures from the SCREENSHOT button / command (gitignored);
@@ -268,8 +274,7 @@ Want J.A.R.V.I.S. in your pocket? The HUD starts a tiny local web server (a **PH
 │   ├── enable_autostart.bat      # Registers a Task Scheduler task that starts the HUD at boot;
 │   ├── enable_startup_task.ps1   # PowerShell helper for the task (crash-restart settings);
 │   ├── disable_autostart.bat     # Deletes the scheduled task again;
-│   ├── .env                      # Your real secrets & settings (gitignored, never committed)
-├──
+│   └── .env                      # Your real secrets & settings (gitignored, never committed)
 ```
 ---
 

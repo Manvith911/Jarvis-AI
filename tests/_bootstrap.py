@@ -1,8 +1,8 @@
 """Shared helpers for the test suite.
 
-Puts the project root on ``sys.path`` (so ``import main`` works no matter
-how the tests are launched) and provides a silent fake TTS so no audio or
-real devices are touched during tests.
+Puts the project root on ``sys.path`` (so ``import core.assistant`` works no
+matter how the tests are launched) and provides a silent fake TTS so no
+audio or real devices are touched during tests.
 """
 
 import os
@@ -29,8 +29,8 @@ class FakeTTS:
 def make_assistant():
     """A PersonalizedAssistant with a fake TTS and no personal memory, so
     tests are deterministic and never read/write the user's real files."""
-    import main
-    a = main.PersonalizedAssistant("qwen3:1.7b", "JARVIS", "", tts=FakeTTS())
+    from core.assistant import PersonalizedAssistant
+    a = PersonalizedAssistant("qwen3:1.7b", "JARVIS", "", tts=FakeTTS())
     a.memory = {}
     a.username = "tester"
     return a

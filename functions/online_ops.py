@@ -3,8 +3,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
-import wikipedia
-import pywhatkit as kit
 from urllib.parse import quote
 from decouple import config
 
@@ -84,12 +82,103 @@ def find_my_ip():
         ex.shutdown(wait=False)
     return None
 
-def search_on_wikipedia(query):
-    results = wikipedia.summary(query, sentences=2)
-    return results
+# ---------------------------------------------------------------------------
+# Wikipedia — direct MediaWiki API (no extra dependency).
+#
+# The `wikipedia` PyPI library is unmaintained and flaky: it regularly picks
+# the wrong disambiguation option ("Java" -> Japan's summary!), raises
+# DisambiguationError / PageError on perfectly normal queries, and breaks
+# whenever Wikipedia tweaks its HTML. Querying the public API directly via
+# `requests` is stable, dependency-free and lets us handle disambiguation
+# pages properly.
+# ---------------------------------------------------------------------------
+_WIKI_API_URL = "https://en.wikipedia.org/w/api.php"
+_WIKI_HEADERS = {
+    "User-Agent": "JARVIS-Assistant/1.0 (personal desktop voice assistant; "
+                  "local use)",
+}
+
+
+def _wiki_json(params):
+    """GET the MediaWiki API; return the parsed JSON or None on failure."""
+    try:
+        resp = requests.get(_WIKI_API_URL, params=params,
+                            headers=_WIKI_HEADERS, timeout=12)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        print(f"[wiki] API error: {e}")
+        return None
+
+
+def search_on_wikipedia(query, sentences=2):
+    """Short plain-text Wikipedia summary for a query — never raises.
+
+    Resolves the query through Wikipedia search (handles redirects and
+    nearby spelling), skips disambiguation pages in favour of a real
+    article, and returns a friendly message instead of an exception when
+    the topic can't be found or the API is unreachable. Always returns a
+    non-empty string.
+    """
+    q = (query or "").strip()
+    if not q:
+        return "I need a topic to look up on Wikipedia."
+
+    data = _wiki_json({
+        "action": "query",
+        "format": "json",
+        "generator": "search",
+        "gsrsearch": q,
+        "gsrnamespace": 0,
+        "gsrlimit": 5,
+        "prop": "extracts|pageprops",
+        "exintro": True,
+        "explaintext": True,
+        "exsentences": max(1, int(sentences)),
+        "redirects": 1,
+    })
+    if not data:
+        return "Wikipedia isn't reachable right now — try again in a moment."
+
+    pages = (data.get("query") or {}).get("pages") or {}
+    pages = sorted(pages.values(), key=lambda p: p.get("index", 999))
+    if not pages:
+        return f"Couldn't find anything on Wikipedia about {q!r}."
+
+    # prefer the first real article — skip disambiguation pages
+    first_extract = None
+    for page in pages:
+        extract = (page.get("extract") or "").strip()
+        if not extract:
+            continue
+        if first_extract is None:
+            first_extract = extract
+        if "disambiguation" not in (page.get("pageprops") or {}):
+            return extract
+    if first_extract:
+        return first_extract
+    return f"Couldn't find anything on Wikipedia about {q!r}."
 
 def play_on_youtube(video):
-    kit.playonyt(video)
+    """Open a video on YouTube. Uses pywhatkit when it's installed;
+    otherwise opens a YouTube search page in the default browser.
+    Never raises — the caller always gets a launched browser or a log."""
+    video = (video or "").strip()
+    if not video:
+        return
+    try:
+        import pywhatkit as kit
+        kit.playonyt(video)
+        return
+    except Exception as e:
+        print(f"[online_ops] couldn't open via pywhatkit ({e}); "
+              "opening YouTube search instead")
+    try:
+        import webbrowser
+        webbrowser.open("https://www.youtube.com/results?search_query="
+                        + quote(video))
+    except Exception as e:
+        print(f"[online_ops] could not open YouTube: {e}")
 
 SERPAPI_KEY = config("SERPAPI_KEY", default="")
 
@@ -287,5 +376,6 @@ def get_random_joke():
     headers = {
         'Accept': 'application/json'
     }
-    res = requests.get("https://icanhazdadjoke.com/", headers=headers).json()
+    res = requests.get("https://icanhazdadjoke.com/", headers=headers,
+                       timeout=10).json()
     return res["joke"]
