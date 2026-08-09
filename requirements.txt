@@ -17,6 +17,14 @@ psutil
 ddgs
 Pillow
 
+# Phone link — scan a QR (PHONE LINK button in the HUD) to use J.A.R.V.I.S.
+# from your phone on the same Wi-Fi.
+flask
+qrcode[pil]
+# cryptography generates the self-signed HTTPS cert that lets the phone
+# browser use its microphone for voice input.
+cryptography
+
 # Offline wake-word detection ('hey jarvis') — models download on first run.
 # If you skip this, the wake word falls back to online speech recognition.
 openwakeword

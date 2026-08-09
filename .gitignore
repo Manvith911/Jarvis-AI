@@ -28,6 +28,9 @@ ai_conversation_history.txt
 ai_memory.json
 # Silent-autostart log (pythonw writes here when launched without a console)
 jarvis_autostart.log
+# Phone-link self-signed HTTPS certificate (regenerated when the LAN IP changes)
+phone_link_cert.pem
+phone_link_key.pem
 # Captured screenshots (the SCREENSHOT button / 'screenshot' command)
 screenshots/
 
