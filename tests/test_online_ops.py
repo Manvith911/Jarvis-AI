@@ -84,6 +84,18 @@ class OnlineOpsTests(unittest.TestCase):
     def test_wikipedia_empty_query(self):
         self.assertIn("topic", oo.search_on_wikipedia("   "))
 
+    # -- jokes ---------------------------------------------------------
+    def test_joke_returns_fallback_when_api_down(self):
+        with patch.object(oo.requests, "get",
+                          side_effect=Exception("down")):
+            joke = oo.get_random_joke()
+        self.assertTrue(joke.strip())
+
+    def test_joke_returns_fallback_when_empty(self):
+        with patch.object(oo.requests, "get") as get:
+            get.return_value.json.return_value = {"joke": ""}
+            self.assertTrue(oo.get_random_joke().strip())
+
     # -- youtube fallback ---------------------------------------------
     def test_play_on_youtube_falls_back_without_pywhatkit(self):
         """pywhatkit missing must not raise — open a YouTube search page."""

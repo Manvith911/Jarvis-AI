@@ -107,6 +107,17 @@ class SapiSpeech:
             return
         self._voice.Speak(clean)
 
+    def stop(self):
+        """Immediately cut off whatever is currently being spoken."""
+        if not self.ok:
+            return
+        try:
+            # SVSFlagsAsync(1) | SVSPurgeBeforeSpeak(2) with empty text
+            # stops the current utterance and purges queued ones.
+            self._voice.Speak("", 3)
+        except Exception as e:
+            print(f"[speech] stop error: {e}")
+
 
 class Speech:
     """Synchronous text-to-speech wrapper (SAPI5 primary, pyttsx3 fallback)."""
@@ -161,6 +172,16 @@ class Speech:
                 print(f"TTS error: {e}")
             finally:
                 self.is_speaking = False
+
+    def stop(self):
+        """Cut off current speech (used by the interrupt feature)."""
+        try:
+            if self._sapi is not None:
+                self._sapi.stop()
+            elif self._engine is not None:
+                self._engine.stop()
+        except Exception as e:
+            print(f"TTS stop error: {e}")
 
     def is_busy(self):
         return self.is_speaking

@@ -27,9 +27,12 @@ except Exception:
 import requests
 from decouple import config
 
-from PyQt6.QtCore import QObject, QPointF, QRectF, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import (
+    QAbstractAnimation, QObject, QPointF, QPropertyAnimation, QRect, QRectF,
+    Qt, QTimer, pyqtProperty, pyqtSignal,
+)
 from PyQt6.QtGui import (
-    QBrush, QColor, QFont, QImage, QPainter, QPen, QPixmap,
+    QBrush, QColor, QFont, QFontMetrics, QImage, QPainter, QPen, QPixmap,
     QTextCharFormat, QTextCursor,
 )
 from PyQt6.QtWidgets import (
@@ -38,7 +41,9 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from core.assistant import PersonalizedAssistant, is_farewell, load_history
+from core.assistant import (
+    PersonalizedAssistant, is_farewell, is_stop_phrase, load_history,
+)
 from core.ollama import BIG_MODEL, DEFAULT_MODEL, split_deep_marker
 from functions.online_ops import (
     find_my_ip, get_city_from_ip, get_latest_news, get_random_joke,
@@ -655,11 +660,13 @@ class GuiSpeech:
         self.tts_available = False
         self.is_speaking = False
         self.muted = False        # when True, text is captured but not spoken
+        self.interrupted = False  # barge-in: drop speech until the next command
         self.capture = False      # when True, on_speak fires (log forwarding)
         self.on_speak = None      # optional callback(text)
         self.on_error = None      # optional callback(message) from the speech thread
         self._errors = []         # buffered errors, drained by the GUI thread
         self._queue = queue.Queue()
+        self._speech = None       # SapiSpeech instance owned by the speech thread
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -679,6 +686,7 @@ class GuiSpeech:
     def _run(self):
         from core.speech import SapiSpeech
         speech = SapiSpeech(rate=1)
+        self._speech = speech
         if speech.ok:
             self.tts_available = True
             print("[gui] TTS ready")
@@ -708,9 +716,29 @@ class GuiSpeech:
                 self.on_speak(text)
             except Exception:
                 pass
-        if self.muted or not self.tts_available:
+        if self.interrupted or self.muted or not self.tts_available:
             return
         self._queue.put(text)
+
+    def stop(self):
+        """Barge-in: cut off current speech and drop everything queued.
+
+        Also sets ``interrupted`` so chunks still streaming from the current
+        reply are silenced until the next command starts (the GUI resets it
+        at the start of each new request).
+        """
+        self.interrupted = True
+        try:
+            while True:
+                self._queue.get_nowait()
+        except queue.Empty:
+            pass
+        speech = self._speech
+        if speech is not None and speech.ok:
+            try:
+                speech.stop()
+            except Exception as e:
+                print(f"[gui] TTS stop error: {e}")
 
     def is_busy(self):
         return self.is_speaking
@@ -729,6 +757,7 @@ class AssistantWorker(QObject):
     wake_detected = pyqtSignal()      # 'hey jarvis' heard
     wake_state = pyqtSignal(bool)     # wake-word loop started / stopped
     processed = pyqtSignal()          # a request finished processing
+    toast = pyqtSignal(str)           # async announcements (timers/reminders)
 
     def __init__(self, assistant):
         super().__init__()
@@ -741,17 +770,73 @@ class AssistantWorker(QObject):
         self._wake_capture = False  # True while capturing a command after a wake
         self._mic_convo = False   # conversation mode: auto-listen after replies
         self._convo_after = False # this capture starts/keeps conversation mode
+        self._interrupt_on = False  # barge-in listener running
+        self._interrupt_thread = None
         self._busy_lock = threading.Lock()
 
     # -- helpers -----------------------------------------------------------
     def say(self, text, tag="sys"):
         self.line.emit(text, tag)
+        # a fresh announcement always speaks (barge-in only silences the
+        # reply it was meant to cut off)
+        self.tts.interrupted = False
         self.tts.speak(text)
 
     def reply_line(self, text):
         self.assistant.history.append(f"AI: {text}")
         self.line.emit(text, "ai")
         self.tts.speak(text)
+
+    def announce(self, text):
+        """Speak an async announcement (timer/reminder) and show it in the
+        transmission log."""
+        self.tts.interrupted = False
+        self.toast.emit(text)
+        self.tts.speak(text)
+
+    # -- barge-in -------------------------------------------------------------
+    def start_interrupt_listener(self):
+        """Listen for 'stop'-style phrases while J.A.R.V.I.S. is speaking,
+        so the user can cut it off mid-sentence."""
+        if self._interrupt_thread is not None and \
+                self._interrupt_thread.is_alive():
+            return
+        self._interrupt_on = True
+        self._interrupt_thread = threading.Thread(
+            target=self._interrupt_loop, daemon=True)
+        self._interrupt_thread.start()
+
+    def stop_interrupt_listener(self):
+        self._interrupt_on = False
+
+    def _interrupt_loop(self):
+        import speech_recognition as sr
+        from core.stt import transcribe
+        recognizer = sr.Recognizer()
+        recognizer.energy_threshold = 300
+        recognizer.dynamic_energy_threshold = True
+        while self._interrupt_on:
+            if not self.assistant.tts.is_busy():
+                time.sleep(0.3)
+                continue
+            # only grab the mic when nothing else is capturing
+            if self.listening or self._wake_capture:
+                time.sleep(0.3)
+                continue
+            try:
+                with sr.Microphone() as source:
+                    recognizer.adjust_for_ambient_noise(source, duration=0.2)
+                    audio = recognizer.listen(source, timeout=1,
+                                              phrase_time_limit=1.5)
+            except Exception:
+                time.sleep(0.6)
+                continue
+            text = transcribe(audio, recognizer, language="en-in")
+            if text and is_stop_phrase(text):
+                print("[gui] barge-in heard — silencing")
+                self.tts.stop()
+                self.line.emit("As you wish — stopping.", "sys")
+                time.sleep(1.5)
 
     # -- main entry: a text message ----------------------------------------
     def process(self, message):
@@ -763,6 +848,8 @@ class AssistantWorker(QObject):
                 self.line.emit("I'm still busy with the previous request.", "err")
                 return
             self.assistant.is_processing = True
+        # a new request is a fresh start: allow speech again after a barge-in
+        self.tts.interrupted = False
         try:
             self.status.emit("THINKING")
             msg, deep = split_deep_marker(msg)
@@ -913,6 +1000,9 @@ class AssistantWorker(QObject):
             if self.assistant.is_processing or self.listening:
                 return
             self.listening = True
+        # the barge-in listener must never hold the mic while we capture —
+        # stop it now and re-arm it once this capture is done
+        self.stop_interrupt_listener()
         self._wake_capture = True
         if from_wake:
             self._mic_convo = True
@@ -923,6 +1013,15 @@ class AssistantWorker(QObject):
         # give the wake-word engine a moment to release its mic stream
         # (it re-checks _wake_paused every ~80 ms) before we open the mic
         time.sleep(0.2)
+        # ...and make sure the barge-in listener has fully released the mic
+        # too — otherwise two PyAudio streams can fight and this capture
+        # silently misses the command. Bounded (normally ~0.3s while the
+        # listener idles; up to ~3s if it was mid-listen), so it can't hang.
+        if self._interrupt_thread is not None:
+            try:
+                self._interrupt_thread.join(timeout=3)
+            except Exception:
+                pass
         self.tts.capture = True
         self.tts.on_speak = lambda t: self.line.emit(t, "sys")
         try:
@@ -936,6 +1035,13 @@ class AssistantWorker(QObject):
             self._wake_capture = False
             with self._busy_lock:
                 self.listening = False
+            # re-arm the barge-in listener now the mic is free again — if the
+            # old thread is still winding down, just flip its flag back on
+            if (self._interrupt_thread is not None
+                    and self._interrupt_thread.is_alive()):
+                self._interrupt_on = True
+            else:
+                self.start_interrupt_listener()
         if query and self._convo_after:
             self._mic_convo = True
         self.listening_finished.emit(query)
@@ -995,6 +1101,7 @@ class AssistantWorker(QObject):
         # quick actions are keyboard interactions — they end the voice
         # conversation session (mirrors typing in the input bar)
         self._mic_convo = False
+        self.tts.interrupted = False
         self.status.emit("PROCESSING")
         if announce:
             self.say(announce, "sys")
@@ -1231,6 +1338,137 @@ class PhoneLinkDialog(QDialog):
 
 
 # ---------------------------------------------------------------------------
+# Toast overlay — a cyberpunk notice that pops in at the top-right of the
+# HUD (timers/reminders). Child widget, so it moves with the window, never
+# steals focus and is invisible to the mouse. Multiple notices queue up.
+# ---------------------------------------------------------------------------
+class ToastOverlay(QWidget):
+    """A cyberpunk notice that pops in at the top-right of the HUD when a
+    timer/reminder fires. Child widget, so it moves with the window, never
+    steals focus and is invisible to the mouse. Multiple notices queue up.
+
+    Fading uses a custom ``fade`` property (child widgets don't honour
+    windowOpacity) — the panel is repainted with scaled alpha each frame.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self._text = ""
+        self._queue = []
+        self._alpha = 0.0
+        self._hold_ms = 4500
+        self._hold = QTimer(self)
+        self._hold.setSingleShot(True)
+        self._hold.timeout.connect(self._begin_fade_out)
+        self._fade_in = QPropertyAnimation(self, b"fade", self)
+        self._fade_in.setDuration(220)
+        self._fade_in.setStartValue(0.0)
+        self._fade_in.setEndValue(1.0)
+        self._fade_in.finished.connect(self._start_hold)
+        self._fade_out = QPropertyAnimation(self, b"fade", self)
+        self._fade_out.setDuration(450)
+        self._fade_out.setStartValue(1.0)
+        self._fade_out.setEndValue(0.0)
+        self._fade_out.finished.connect(self._on_faded_out)
+        self.setFixedWidth(340)
+        self.setFixedHeight(64)
+        self.hide()
+
+    # -- animation property ------------------------------------------------
+    def get_fade(self):
+        return self._alpha
+
+    def set_fade(self, value):
+        self._alpha = max(0.0, min(1.0, float(value)))
+        self.update()
+
+    fade = pyqtProperty(float, get_fade, set_fade)
+
+    # -- public API ---------------------------------------------------------
+    def show_toast(self, text, hold_ms=4500):
+        """Queue a notice; it appears top-right, holds, then fades away."""
+        if not text or not text.strip():
+            return
+        self._queue.append((text.strip(), int(hold_ms)))
+        if self.isVisible() or \
+                self._fade_in.state() == QAbstractAnimation.State.Running or \
+                self._fade_out.state() == QAbstractAnimation.State.Running:
+            return  # current toast owns the stage — this one waits its turn
+        self._next()
+
+    def _next(self):
+        if not self._queue:
+            self.hide()
+            return
+        self._text, self._hold_ms = self._queue.pop(0)
+        # size the panel to the wrapped message
+        fm = QFontMetrics(QFont("Courier New", 9))
+        wrap = fm.boundingRect(QRect(0, 0, self.width() - 30, 800),
+                               Qt.TextFlag.TextWordWrap, self._text)
+        self.setFixedHeight(max(64, wrap.height() + 44))
+        self._position()
+        self.set_fade(0.0)
+        self.show()
+        self.raise_()
+        self._fade_in.start()
+
+    def _start_hold(self):
+        """Hold the toast on screen for its own duration, then fade out."""
+        self._hold.start(self._hold_ms)
+
+    def _position(self):
+        parent = self.parentWidget()
+        if parent is None or parent.width() <= 0:
+            return
+        # never wider than the parent (defensive for tiny windows)
+        width = min(self.width(), max(100, parent.width() - 32))
+        if width != self.width():
+            self.setFixedWidth(width)
+        self.move(max(8, parent.width() - self.width() - 16), 16)
+
+    def _begin_fade_out(self):
+        if self._fade_out.state() == QAbstractAnimation.State.Running:
+            return  # guard: already fading out
+        self._fade_out.start()
+
+    def _on_faded_out(self):
+        self.hide()
+        self._next()
+
+    # -- painting -----------------------------------------------------------
+    def paintEvent(self, _):
+        a = self._alpha
+        if a <= 0.01:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(0.5, 0.5, self.width() - 1, self.height() - 1)
+        # soft glow + panel
+        p.setPen(QPen(qcol(C.PRI, int(70 * a)), 6))
+        p.setBrush(QBrush(qcol(C.PANEL, int(255 * a))))
+        p.drawRoundedRect(r, 8, 8)
+        p.setPen(QPen(qcol(C.PRI, int(210 * a)), 1))
+        p.drawRoundedRect(r, 8, 8)
+        # accent bar
+        p.fillRect(QRectF(1, 9, 3, self.height() - 18),
+                   qcol(C.ACC, int(255 * a)))
+        # header
+        p.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        p.setPen(qcol(C.ACC2, int(255 * a)))
+        p.drawText(QRectF(14, 7, self.width() - 28, 15),
+                   Qt.AlignmentFlag.AlignLeft, "◈ NOTICE")
+        # message (word-wrapped)
+        p.setFont(QFont("Courier New", 9))
+        p.setPen(qcol(C.TEXT, int(255 * a)))
+        p.drawText(QRectF(14, 24, self.width() - 28, self.height() - 30),
+                   Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap,
+                   self._text)
+
+
+# ---------------------------------------------------------------------------
 # Main window
 # ---------------------------------------------------------------------------
 class MainWindow(QMainWindow):
@@ -1280,6 +1518,9 @@ class MainWindow(QMainWindow):
         root.addLayout(row, 1)
         root.addWidget(self._build_input_bar())
         self.setCentralWidget(central)
+        # the notice overlay floats above the whole window (created after
+        # the central widget so it paints on top)
+        self._toast = ToastOverlay(self)
 
         self.led_update.connect(self._apply_led)
         self.ollama_status.connect(self._on_ollama_status)
@@ -1516,6 +1757,7 @@ class MainWindow(QMainWindow):
         w.wake_detected.connect(self._on_wake_detected)
         w.wake_state.connect(self._on_wake_state)
         w.processed.connect(self._on_processed)
+        w.toast.connect(self._on_toast)
 
     def _start_timers(self):
         self._metrics_timer = QTimer(self)
@@ -1796,6 +2038,16 @@ class MainWindow(QMainWindow):
             else:
                 self._on_status("READY")
 
+    def _on_toast(self, message):
+        """A timer/reminder fired: log it and pop the HUD toast."""
+        self.log.enqueue_line(message, "sys")
+        self._toast.show_toast(message)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._toast is not None:
+            self._toast._position()
+
     def _on_processed(self):
         """After a voice-captured request finishes, open the mic again
         automatically (conversation mode) so the user never has to say
@@ -2004,6 +2256,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         try:
             self.worker._mic_convo = False
+            self.worker.stop_interrupt_listener()
             self.worker.stop_wake_loop()
             if self.assistant.history:
                 threading.Thread(
@@ -2033,6 +2286,11 @@ def main():
                                       tts=GuiSpeech())
     assistant.tts.muted = not speaker_on
     worker = AssistantWorker(assistant)
+    # route timer/reminder announcements through the worker so they land in
+    # the transmission log as well as the speakers
+    assistant.timers.on_fire = worker.announce
+    # barge-in: 'stop' while speaking cuts the reply off
+    worker.start_interrupt_listener()
     window = MainWindow(assistant, worker, speaker_on, auto_listen, wake_word)
     window.show()
     sys.exit(app.exec())

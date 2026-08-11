@@ -14,7 +14,12 @@ import speech_recognition as sr
 from decouple import config
 
 from .ollama import OllamaError, StreamingOllama, check_model
-from .speech import Speech
+from .speech import Speech, strip_for_speech
+from .stt import transcribe_local
+from .timers import (
+    TimerManager, format_duration, parse_reminder_command,
+    parse_time_reply, parse_timer_command,
+)
 from .memory import (
     apply_facts, clear_memory, confirmation_text, extract_facts,
     load_memory, memory_snippet, memory_summary, save_memory,
@@ -25,8 +30,11 @@ from functions.online_ops import (
     search_on_wikipedia, search_on_google
 )
 from functions.os_ops import (
-    looks_like_command, open_application, open_in_browser,
-    parse_open_command, search_url, strip_politeness, take_screenshot
+    battery_status, looks_like_command, lock_workstation,
+    media_next, media_play_pause, media_previous, media_stop,
+    open_application, open_in_browser, parse_open_command, search_url,
+    set_mute, set_volume, strip_politeness, take_screenshot,
+    volume_down, volume_up,
 )
 
 # Data files live at the project root (not inside the package folders), so
@@ -93,6 +101,40 @@ def parse_city_from_query(query):
     return city or None
 
 
+# Phrases that interrupt J.A.R.V.I.S. mid-sentence (barge-in). The whole
+# transcript must be one of these, so ordinary speech never cuts it off.
+_STOP_PHRASES = {
+    "stop", "stop it", "stop that", "stop talking", "stop speaking",
+    "shut up", "shut it", "be quiet", "quiet", "quiet please",
+    "cancel", "cancel that", "enough", "that's enough", "thats enough",
+    "cut it out", "cut that out", "silence", "hush", "enough already",
+}
+
+
+def is_stop_phrase(text):
+    """True when the whole transcript is a 'stop talking' style phrase.
+    Case-insensitive and strict on purpose so J.A.R.V.I.S.'s own replies
+    are never mistaken for an interrupt ('stop the car' is chat, not a
+    barge-in)."""
+    t = (text or "").lower().strip()
+    t = re.sub(r"[^a-z' ]", " ", t)  # drop punctuation (incl. commas)
+    t = re.sub(r"\s+", " ", t).strip()
+    if not t:
+        return False
+    if t in _STOP_PHRASES:
+        return True
+    # tolerate small stumbles: "stop", "stop now", "stop please",
+    # "stop it now" — but never longer phrases like "stop the car"
+    if t.startswith("stop"):
+        words = t.split()
+        # "stop" alone, or a tiny stumble like "stop now" / "stop please"
+        if len(words) == 1 and t == "stop":
+            return True
+        if len(words) == 2 and words[1] in ("it", "that", "now", "please"):
+            return True
+    return False
+
+
 def is_farewell(text):
     """True when the message is a plain goodbye, not a command or question
     that merely contains a 'bye' word.
@@ -128,6 +170,8 @@ class PersonalizedAssistant:
         self._allow_nested_listen = True
         self.model = model_name
         self.ollama = StreamingOllama(model=self.model)
+        # Timers & reminders fire on a background daemon thread.
+        self.timers = TimerManager(on_fire=self._timer_fired)
         self.history = []
         self.history_text = history_text
         # Persistent personal memory — facts the user shared in past chats
@@ -184,7 +228,11 @@ class PersonalizedAssistant:
                     audio = recognizer.listen(source, timeout=3,
                                               phrase_time_limit=5)
                     print('Recognizing...')
-                    query = recognizer.recognize_google(audio, language='en-in')
+                    # local whisper first (offline), Google as fallback
+                    query = transcribe_local(audio)
+                    if query is None:
+                        query = recognizer.recognize_google(
+                            audio, language='en-in')
                     print(f"You said: {query}")
                     return query.lower()
                 except sr.WaitTimeoutError:
@@ -323,7 +371,11 @@ class PersonalizedAssistant:
                 "Try asking me again in a moment.")
 
     def speak(self, text):
-        print(f"{self.botname}: {text}")
+        try:
+            print(f"{self.botname}: {text}")
+        except UnicodeEncodeError:
+            # some consoles (cp1252) can't print emoji like ⏰ — never crash
+            print(strip_for_speech(f"{self.botname}: {text}"))
         self.tts.speak(text)
 
     def wait_for_speech_completion(self):
@@ -485,7 +537,114 @@ class PersonalizedAssistant:
                     print(f"Command error ({key}): {e}")
                 return True
 
-        # 3. "play <song> on youtube" -> play it right away (no follow-up Q)
+        # 3. system & media control (volume / mute / lock / battery / keys)
+        if re.search(
+            r"\b(?:turn\s+up\b|turn\s+(?:it|the\s+volume|volume)\s+up\b|"
+            r"volume\s+up\b|increase\s+(?:the\s+)?volume\b|louder\b|"
+            r"raise\s+(?:the\s+)?volume\b)", lowered):
+            self._do_volume("up")
+            return True
+        if re.search(
+            r"\b(?:turn\s+down\b|turn\s+(?:it|the\s+volume|volume)\s+down\b|"
+            r"volume\s+down\b|decrease\s+(?:the\s+)?volume\b|quieter\b|"
+            r"lower\s+(?:the\s+)?volume\b)", lowered):
+            self._do_volume("down")
+            return True
+        m = re.search(
+            r"\b(?:set\s+)?(?:the\s+)?volume\s+(?:to\s+)?(\d{1,3})"
+            r"\s*(?:percent|%)?\b", lowered)
+        if m:
+            self._do_volume("level", int(m.group(1)))
+            return True
+        if "unmute" in lowered:
+            self._do_mute("off")
+            return True
+        if re.search(r"\bmute\b", lowered):
+            self._do_mute("on")
+            return True
+        if re.search(
+            r"\block\s+(?:the\s+)?(?:pc|computer|laptop|screen|workstation)\b",
+            lowered,
+        ):
+            self._do_lock()
+            return True
+        if re.search(
+            r"\bbattery\s+(?:percentage|percent|level|status|left|remaining|"
+            r"life|charge)\b|\bhow\s+much\s+(?:battery|charge|power)\b|"
+            r"\bbattery\s+left\b",
+            lowered,
+        ):
+            self._report_battery()
+            return True
+        if re.search(
+            r"\b(?:next|skip)\s+(?:track|song)\b|\bnext\s+one\b", lowered):
+            self._do_media("next")
+            return True
+        if re.search(r"\b(?:previous|prev|last)\s+(?:track|song)\b",
+                     lowered):
+            self._do_media("previous")
+            return True
+        if re.search(r"\b(?:stop|halt)\s+(?:the\s+)?(?:music|song|audio)\b",
+                     lowered):
+            self._do_media("stop")
+            return True
+        if (re.search(r"\bpause\b|\bresume\b|\bunpause\b|"
+                      r"\bcontinue\s+(?:playing|the\s+music)\b", lowered)
+                or re.fullmatch(
+                    r"(?:please\s+)?play(?:\s+(?:some\s+|the\s+)?"
+                    r"(?:music|a\s+song|songs|audio))?",
+                    strip_politeness(query), flags=re.IGNORECASE)):
+            self._do_media("play_pause")
+            return True
+
+        # 4. timers & reminders
+        parsed = parse_timer_command(lowered)
+        if parsed:
+            seconds, _unit = parsed
+            self.timers.add(seconds, "⏰ Time's up! Your timer's done.")
+            self.speak(
+                f"Timer set for {format_duration(seconds)}. I'll ping you "
+                "when it's up!")
+            return True
+        parsed = parse_reminder_command(lowered)
+        if parsed:
+            task, seconds = parsed
+            msg = f"⏰ Reminder: {task}" if task else "⏰ Time's up!"
+            self.timers.add(seconds, msg)
+            self.speak(
+                f"Got it — I'll remind you{(' to ' + task) if task else ''} "
+                f"in {format_duration(seconds)}.")
+            return True
+        if "remind me" in lowered:
+            # a reminder with no time — ask for it, then parse the reply
+            m_task = re.search(r"\bremind\s+me\s+to\s+(.+?)\s*$", lowered)
+            task = m_task.group(1).strip().strip(".,!?") if m_task else ""
+            self.speak("Sure! When should I remind you?")
+            self.wait_for_speech_completion()
+            when = self.listen()
+            if when:
+                seconds = parse_time_reply(when)
+                if seconds:
+                    msg = f"⏰ Reminder: {task}" if task else "⏰ Time's up!"
+                    self.timers.add(seconds, msg)
+                    self.speak(f"Done — reminder set for "
+                               f"{format_duration(seconds)}.")
+                else:
+                    self.speak("Sorry, I didn't catch the time. Try "
+                               "'remind me to X in N minutes'.")
+            return True
+        if re.search(r"\b(?:what|any)\s+(?:timers?|reminders?)\b|"
+                     r"\b(?:timers?|reminders?)\s+(?:active|set|running)\b",
+                     lowered):
+            self._report_timers()
+            return True
+        if re.search(r"\b(?:cancel|clear|delete|remove)\s+(?:all\s+)?"
+                     r"(?:timers?|reminders?)\b", lowered):
+            self.timers.cancel_all()
+            self.speak("All timers and reminders cleared.")
+            return True
+
+        # 5. "play <song> on youtube" -> play it right away (no follow-up Q)
         clean = strip_politeness(query)
         if re.match(r"^(please\s+)?play\s+", clean, flags=re.IGNORECASE):
             if not have_internet():
@@ -511,7 +670,7 @@ class PersonalizedAssistant:
                     results = search_on_wikipedia(search_query)
                     short_result = results[:200] + "..." if len(results) > 200 else results
                     self.speak(f"Wikipedia says: {short_result}")
-                except Exception as e:
+                except Exception:
                     self.speak("Wikipedia's not playing nice right now.")
             return True
 
@@ -563,7 +722,7 @@ class PersonalizedAssistant:
             news = get_latest_news()
             if news:
                 self.speak(f"Here's one: {news[0]}")
-        except Exception as e:
+        except Exception:
             self.speak("Couldn't fetch news. I blame the internet goblins!")
 
     def _report_joke(self):
@@ -592,3 +751,77 @@ class PersonalizedAssistant:
             self.speak("Screenshot saved — check the screenshots folder!")
         else:
             self.speak("Screenshot failed — couldn't capture the screen.")
+
+    # -- system & media control -------------------------------------------
+    def _do_volume(self, direction, level=None):
+        """Volume up/down (media keys) or set an exact level (pycaw)."""
+        if direction == "up":
+            ok = volume_up()
+            self.speak("Volume up!" if ok
+                       else "Couldn't turn the volume up.")
+        elif direction == "down":
+            ok = volume_down()
+            self.speak("Volume down." if ok
+                       else "Couldn't turn the volume down.")
+        else:
+            level = max(0, min(100, int(level or 50)))
+            if set_volume(level):
+                self.speak(f"Volume set to {level} percent.")
+            else:
+                self.speak("I can't set an exact volume level on this "
+                           "machine — try 'volume up' or 'volume down' "
+                           "instead.")
+
+    def _do_mute(self, state):
+        # set_mute is exact when pycaw is installed; falls back to the mute
+        # media key (toggle) otherwise
+        if set_mute(state == "on"):
+            self.speak("Muted!" if state == "on" else "Unmuted — "
+                       "speaking again!")
+        else:
+            self.speak("Couldn't change the mute state.")
+
+    def _do_lock(self):
+        if lock_workstation():
+            self.speak("Locking the computer. See you in a bit!")
+        else:
+            self.speak("Couldn't lock the computer.")
+
+    def _report_battery(self):
+        status = battery_status()
+        if status is None:
+            self.speak("I can't read a battery — this looks like a "
+                       "desktop without one.")
+        else:
+            pct, plugged = status
+            if plugged:
+                self.speak(f"You're at {pct} percent and charging.")
+            else:
+                self.speak(f"You're at {pct} percent on battery.")
+
+    def _do_media(self, action):
+        fns = {"play_pause": media_play_pause, "next": media_next,
+               "previous": media_previous, "stop": media_stop}
+        fn = fns.get(action)
+        if fn and fn():
+            words = {"play_pause": "playing/pausing", "next": "skipping",
+                     "previous": "going back", "stop": "stopping"}
+            self.speak(f"{words[action].capitalize()} the media.")
+        else:
+            self.speak("Couldn't control media on this machine.")
+
+    # -- timers & reminders ------------------------------------------------
+    def _timer_fired(self, message):
+        """Called by TimerManager when a timer/reminder is due."""
+        try:
+            self.speak(message)
+        except Exception as e:
+            print(f"[timers] announce failed: {e}")
+
+    def _report_timers(self):
+        items = self.timers.list()
+        if not items:
+            self.speak("No timers or reminders are set right now.")
+            return
+        parts = [f"{format_duration(s)}: {msg}" for s, msg in items]
+        self.speak("Here's what's coming up: " + "; ".join(parts) + ".")

@@ -67,13 +67,14 @@ def find_browser(browser):
 
 
 def normalize_url(name):
-    """Turn 'github', 'github.com', 'www.x.io' into a full https:// URL."""
+    """Turn 'github', 'github.com', 'www.x.io', 'localhost:3000' into a
+    full https:// URL."""
     n = (name or "").strip().strip('"').strip("'")
     if n.startswith(("http://", "https://")):
         return n
     if n.startswith("www."):
         return "https://" + n
-    if "." in n:
+    if "." in n or ":" in n:  # a domain, a path, or host:port
         return "https://" + n
     return "https://" + n + ".com"
 
@@ -144,7 +145,9 @@ def open_camera():
 
 
 def open_notepad():
-    sp.run('notepad.exe', shell=True)
+    # Popen, not run(): run() would block until Notepad closes, keeping the
+    # assistant 'busy' (wake word paused, no new commands) the whole time.
+    sp.Popen('notepad.exe')
 
 
 def open_discord():
@@ -414,3 +417,134 @@ def parse_open_command(query):
 def search_url(query):
     """Build a DuckDuckGo search URL (free, no API key)."""
     return "https://duckduckgo.com/?q=" + urllib.parse.quote(query)
+
+
+# ---------------------------------------------------------------------------
+# System & media control (Windows virtual-key / COM tricks — no extra deps
+# for the common cases; exact volume needs pycaw, gracefully optional)
+# ---------------------------------------------------------------------------
+_VK_VOLUME_UP = 0xAF
+_VK_VOLUME_DOWN = 0xAE
+_VK_VOLUME_MUTE = 0xAD
+_VK_MEDIA_PLAYPAUSE = 0xB3
+_VK_MEDIA_NEXT = 0xB0
+_VK_MEDIA_PREV = 0xB1
+_VK_MEDIA_STOP = 0xB2
+
+
+def _keybd(vk):
+    """Tap a virtual key (press + release). Windows only."""
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        ctypes.windll.user32.keybd_event(vk, 0, 0, 0)
+        ctypes.windll.user32.keybd_event(vk, 0, 2, 0)  # KEYEVENTF_KEYUP
+        return True
+    except Exception as e:
+        print(f"[os_ops] keybd_event failed: {e}")
+        return False
+
+
+def volume_up(steps=1):
+    """Turn the volume up (media-key presses). Returns True on Windows."""
+    ok = True
+    for _ in range(int(steps)):
+        ok = _keybd(_VK_VOLUME_UP) and ok
+    return ok
+
+
+def volume_down(steps=1):
+    """Turn the volume down. Returns True on Windows."""
+    ok = True
+    for _ in range(int(steps)):
+        ok = _keybd(_VK_VOLUME_DOWN) and ok
+    return ok
+
+
+def toggle_mute():
+    """Toggle mute. Returns True on Windows."""
+    return _keybd(_VK_VOLUME_MUTE)
+
+
+def set_mute(muted):
+    """Mute (True) or unmute (False) precisely via pycaw when available.
+
+    Falls back to the mute media key (a toggle) when pycaw is missing — so
+    'unmute' while already unmuted still toggles the wrong way without it.
+    """
+    try:
+        from ctypes import POINTER, cast
+        from comtypes import CLSCTX_ALL
+        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+        devices = AudioUtilities.GetSpeakers()
+        interface = devices.Activate(IAudioEndpointVolume._iid_,
+                                     CLSCTX_ALL, None)
+        volume = cast(interface, POINTER(IAudioEndpointVolume))
+        volume.SetMute(1 if muted else 0, None)
+        return True
+    except Exception:
+        return toggle_mute()
+
+
+def set_volume(level):
+    """Set the master volume to ``level`` (0-100). Needs pycaw.
+
+    Falls back to a friendly failure (not a crash) when pycaw/comtypes
+    aren't installed.
+    """
+    try:
+        from ctypes import POINTER, cast
+        from comtypes import CLSCTX_ALL
+        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+        devices = AudioUtilities.GetSpeakers()
+        interface = devices.Activate(IAudioEndpointVolume._iid_,
+                                     CLSCTX_ALL, None)
+        volume = cast(interface, POINTER(IAudioEndpointVolume))
+        scalar = max(0.0, min(1.0, float(level) / 100.0))
+        volume.SetMasterVolumeLevelScalar(scalar, None)
+        return True
+    except Exception as e:
+        print(f"[os_ops] set_volume failed: {e}")
+        return False
+
+
+def lock_workstation():
+    """Lock the screen. Returns True when the lock was invoked."""
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        return bool(ctypes.windll.user32.LockWorkStation())
+    except Exception as e:
+        print(f"[os_ops] lock failed: {e}")
+        return False
+
+
+def battery_status():
+    """(percent, plugged) via psutil, or None when there's no battery."""
+    try:
+        import psutil
+        b = psutil.sensors_battery()
+        if b is None:
+            return None
+        return (int(b.percent), bool(b.power_plugged))
+    except Exception:
+        return None
+
+
+def media_play_pause():
+    """Toggle play/pause for the current media player."""
+    return _keybd(_VK_MEDIA_PLAYPAUSE)
+
+
+def media_next():
+    return _keybd(_VK_MEDIA_NEXT)
+
+
+def media_previous():
+    return _keybd(_VK_MEDIA_PREV)
+
+
+def media_stop():
+    return _keybd(_VK_MEDIA_STOP)

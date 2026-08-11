@@ -16,6 +16,16 @@ psutil
 ddgs
 Pillow
 
+# Fully-local speech-to-text (optional): when installed, J.A.R.V.I.S. stops
+# using Google's speech API and transcribes your voice offline. The model
+# (~75 MB for "base") downloads on first use — configure via WHISPER_MODEL
+# in .env (tiny/base/small/medium). Without it, Google's free API is used.
+faster-whisper
+
+# Exact volume control ("volume to 50%") — optional; volume up/down and
+# mute work without it (Windows media keys).
+pycaw
+
 # Phone link — scan a QR (PHONE LINK button in the HUD) to use J.A.R.V.I.S.
 # from your phone on the same Wi-Fi.
 flask

@@ -27,6 +27,10 @@ Unlike cloud assistants, your **AI answers and voice replies never leave your PC
 ### 🔥 Features
 - 🗣️ **Voice-controlled assistant** – Uses speech recognition to process commands.
 - 💬 **Conversation mode** – Wake J.A.R.V.I.S. once with "Hey Jarvis" and keep talking: after every reply it listens again for your next command, so you can chain *"what's the weather" → "open youtube" → "tell me a joke"* without repeating the wake word. It only goes back to standby after a few seconds of silence (or when you type, click a quick action, or say *"bye"*).
+- 🦻 **Fully offline speech-to-text (optional)** – With `faster-whisper` installed, your voice is transcribed **locally on your PC** and Google's speech API is never used — the entire voice pipeline works with no internet. Pick a model with `WHISPER_MODEL` in `.env` (`tiny`/`base`/`small`/`medium`); it downloads once and is cached.
+- ⏱️ **Timers & reminders** – *"Set a timer for 10 minutes"* or *"remind me to call dad at 5 pm"* — J.A.R.V.I.S. speaks up when the time comes and shows it in the HUD log. Ask *"what timers are active?"* or *"cancel all timers"* anytime.
+- 🔊 **System & media control** – *"volume up"*, *"set volume to 50%"*, *"mute"*, *"lock the pc"*, *"battery percentage"*, *"next track"*, *"pause"*, *"play music"* — hands-free PC control with no extra services.
+- ✋ **Barge-in** – Say *"stop"* (or *"shut up"*, *"be quiet"*, *"cancel"*…) while J.A.R.V.I.S. is talking and it cuts itself off and listens to you instead.
 - 🤖 **AI-powered responses** – Uses local Ollama models (Qwen 3) for intelligent interaction.
 - 💻 **PC control capabilities** – Opens apps & websites in your browser of choice ("open github in brave"), takes screenshots (saved to the `screenshots/` folder), and runs system commands.
 - 🎙️ **Voice in, voice out** – Replies are spoken fully offline (SAPI5); hearing you uses Google's free speech-to-text API (needs internet).
@@ -45,13 +49,15 @@ A quick honest rundown of what runs on your PC and what needs the internet:
 
 | Runs 100% locally | Needs internet |
 |---|---|
-| AI answers (Ollama model) | Speech-to-text (Google) |
+| AI answers (Ollama model) | Speech-to-text (Google) — *only when faster-whisper isn't installed* |
 | Voice replies (SAPI5) | Weather, news, jokes, your IP |
 | "Hey Jarvis" wake word (openWakeWord) | YouTube / Wikipedia lookups |
 | Personal memory | Web-search answers ("tell me about X") |
-| Opening apps, screenshots, system commands | `google X` command |
+| Speech-to-text (faster-whisper, when installed) | `google X` command |
+| Timers, reminders, volume, media keys, lock, battery | |
+| Opening apps, screenshots, system commands | |
 
-When you're offline, J.A.R.V.I.S. tells you which of the online features are unavailable (see the **INTERNET** status LED). The AI chat keeps working.
+When you're offline, J.A.R.V.I.S. tells you which of the online features are unavailable (see the **INTERNET** status LED). With `faster-whisper` installed the *entire* voice pipeline (wake word → hear you → think → reply) runs with no internet at all.
 
 ---
 
@@ -118,6 +124,8 @@ You'll know it worked when your prompt is prefixed with `(ollama_assistant_env)`
 ```bash
 pip install -r requirements.txt
 ```
+> 🦻 **Fully offline speech-to-text (optional but recommended):** `faster-whisper` is already in `requirements.txt`. The first time you speak, it downloads the model (e.g. ~75 MB for `base`) and caches it — after that your voice is transcribed locally and Google's speech API is never used. Prefer a faster/smaller one? Set `WHISPER_MODEL=tiny` in `.env`. Skip the install and everything still works via Google's free speech API.
+> 🔊 **Exact volume ("set volume to 50%")** needs `pycaw` (also in `requirements.txt`); volume up/down and mute work without it via Windows media keys.
 
 ### 7. Create Your .env File
 There's a template ready for you — just copy it and fill it in:
@@ -168,6 +176,7 @@ You get:
 - 🎙️ **Voice input** — the HUD **starts listening automatically as soon as it opens** (right after its greeting), and you can re-trigger it with the MIC button. The **AUTO-MIC** toggle in the side panel turns this off/on (remembered between sessions)
 - 🗣️ **"Hey Jarvis" wake word** — the HUD stands by, listening continuously, and only wakes when you address it. Runs **fully offline** (openWakeWord), instant and free. Toggle with the **WAKE** button (remembered between sessions). When ON, it replaces the one-shot auto-listen
 - 💬 **Conversation mode** — once woken (or after auto-mic starts listening), J.A.R.V.I.S. stays in the conversation: after every reply it re-opens the mic for your next command, no "Hey Jarvis" needed. Silence for a few seconds (or typing, clicking a quick action, or saying *bye*) returns it to standby
+- ✋ **Barge-in** — while J.A.R.V.I.S. is speaking, say *"stop"* / *"shut up"* / *"be quiet"* / *"cancel"* to cut it off instantly and take back the mic
 - 🗣️ **Voice replies** via TTS (toggle with the SPEAKER button)
 - ⚙️ **STARTUP toggle** — the **STARTUP: ON/OFF** button switches **launching J.A.R.V.I.S. at Windows startup** on and off, right from inside the HUD (no .bat files needed). When **OFF**, it won't start on boot
 - 🚀 **Ollama auto-start** — if the local Ollama server is offline when the HUD opens (typical right after a reboot), J.A.R.V.I.S. starts it automatically in the background and waits until it's online, so your first question always gets answered
@@ -189,6 +198,12 @@ You get:
 | `forget everything` | Wipes its memory of you |
 | `bye` / `goodbye` / `see you` | Ends the chat, saves a summary, and returns to standby |
 | (after *"Hey Jarvis"*) keep talking | Every follow-up command is picked up automatically — the wake word is only needed once |
+| `set a timer for 10 minutes` / `remind me to call dad at 5 pm` | Sets a timer / reminder; J.A.R.V.I.S. speaks up when it's due |
+| `what timers are active` / `cancel all timers` | Lists or wipes pending timers & reminders |
+| `volume up` / `set volume to 50` / `mute` | Controls system volume (exact level needs `pycaw`) |
+| `lock the pc` / `battery percentage` | Locks the screen / reports battery & charging state |
+| `next track` / `pause` / `play music` / `stop the music` | Media keys for your current player |
+| (while J.A.R.V.I.S. is talking) `stop` / `shut up` | Cuts the reply off — barge-in |
 | `tell me about narendra modi` / `who is Einstein` / `give me information on black holes` | Auto-searches the web and answers with real facts |
 | `ULTRATHINK: explain black holes` | Answers with the bigger, smarter model (when you've pulled one) |
 | Scan the **PHONE LINK** QR with your phone's camera | Opens J.A.R.V.I.S. in the phone browser (same Wi-Fi) — chat, commands, voice input, quick actions |

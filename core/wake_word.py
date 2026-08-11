@@ -241,10 +241,13 @@ class WakeWordListener:
                     break
                 text = ""
                 try:
-                    text = recognizer.recognize_google(
-                        audio, language="en-in").lower()
+                    from core.stt import transcribe
+                    text = (transcribe(audio, recognizer,
+                                       language="en-in") or "").lower()
                 except Exception:
                     continue  # speech heard but not understood — not a wake
+                if not text:
+                    continue
                 if self._is_wake_text(text):
                     cooldown = time.time() + 4.0
                     self._fire()
@@ -278,6 +281,23 @@ class WakeWordListener:
         if not t or not name:
             return False
         words = t.split()
+        # a dotted botname like "J.A.R.V.I.S." normalizes to "j a r v i s"
+        # (punctuation becomes spaces) — merge runs of single letters back
+        # into one word so the name still matches a spoken "jarvis".
+        merged = []
+        i = 0
+        while i < len(words):
+            if (len(words[i]) == 1 and i + 1 < len(words)
+                    and len(words[i + 1]) == 1):
+                run = ""
+                while i < len(words) and len(words[i]) == 1:
+                    run += words[i]
+                    i += 1
+                merged.append(run)
+            else:
+                merged.append(words[i])
+                i += 1
+        words = merged
         while words and words[0] in _FILLER_WORDS:
             words.pop(0)
         if not words:

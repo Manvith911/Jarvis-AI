@@ -373,9 +373,16 @@ def get_weather_report(city=None):
     return "Unknown", "--℃", "--℃"
 
 def get_random_joke():
-    headers = {
-        'Accept': 'application/json'
-    }
-    res = requests.get("https://icanhazdadjoke.com/", headers=headers,
-                       timeout=10).json()
-    return res["joke"]
+    """A random dad joke, or a safe fallback when the API is unreachable.
+    Never raises (matches the rest of this module)."""
+    try:
+        headers = {'Accept': 'application/json'}
+        res = requests.get("https://icanhazdadjoke.com/", headers=headers,
+                           timeout=10).json()
+        joke = (res.get("joke") or "").strip()
+        if joke:
+            return joke
+    except Exception as e:
+        print(f"[online_ops] joke error: {e}")
+    return ("Why did the scarecrow win an award? "
+            "Because he was outstanding in his field!")

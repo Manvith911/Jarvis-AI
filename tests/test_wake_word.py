@@ -51,6 +51,20 @@ class WakeTextTests(unittest.TestCase):
         self.assertTrue(w._is_wake_text("hey alexa"))
         self.assertFalse(w._is_wake_text("hey jarvis"))
 
+    def test_dotted_botname(self):
+        """BOTNAME="J.A.R.V.I.S." must still match a spoken "jarvis" —
+        the dots normalize to spaces, so the name becomes single letters."""
+        w = WakeWordListener(botname="J.A.R.V.I.S.")
+        self.assertTrue(w._is_wake_text("hey jarvis"))
+        self.assertTrue(w._is_wake_text("jarvis what's the weather"))
+        self.assertFalse(w._is_wake_text("hey siri"))
+        self.assertFalse(w._is_wake_text("hello there"))
+
+    def test_dotted_botname_not_fooled_by_single_letters(self):
+        """Merging letter runs must not turn 'hey a i' into a wake."""
+        w = WakeWordListener(botname="J.A.R.V.I.S.")
+        self.assertFalse(w._is_wake_text("hey a i"))
+
 
 if __name__ == "__main__":
     unittest.main()
