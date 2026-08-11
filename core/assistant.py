@@ -25,8 +25,8 @@ from functions.online_ops import (
     search_on_wikipedia, search_on_google
 )
 from functions.os_ops import (
-    open_application, open_in_browser, parse_open_command,
-    search_url, strip_politeness, take_screenshot
+    looks_like_command, open_application, open_in_browser,
+    parse_open_command, search_url, strip_politeness, take_screenshot
 )
 
 # Data files live at the project root (not inside the package folders), so
@@ -92,11 +92,40 @@ def parse_city_from_query(query):
         "", city, flags=re.IGNORECASE).strip()
     return city or None
 
+
+def is_farewell(text):
+    """True when the message is a plain goodbye, not a command or question
+    that merely contains a 'bye' word.
+
+    'bye', 'goodbye jarvis' and 'ok see you' end the chat, but 'play bye
+    bye bye on youtube', 'search for goodbyes in movies' and 'what does bye
+    mean' must keep going. A farewell is short, has no command prefix and
+    isn't a question.
+    """
+    t = strip_politeness((text or "").strip().lower())
+    if not t or looks_like_command(t):
+        return False
+    if len(t.split()) > 4:
+        return False
+    if re.match(
+        r"^(what|when|why|how|where|who|which|do|does|did|is|are|"
+        r"can|could|will|would|tell|explain|define|search|play|open)\b",
+        t,
+    ):
+        return False
+    return bool(re.search(
+        r"\b(bye|goodbye|good\s+night|see\s+ya|see\s+you)\b", t))
+
 class PersonalizedAssistant:
     def __init__(self, model_name, botname, history_text, tts=None):
         self.botname = botname
         self.tts = tts or Speech()
         self.is_processing = False
+        # When True, handle_command's wikipedia/youtube follow-up may open
+        # the mic while is_processing is set (an intentional nested capture).
+        # Remote clients (the phone link) disable it so a phone request never
+        # grabs the desktop microphone.
+        self._allow_nested_listen = True
         self.model = model_name
         self.ollama = StreamingOllama(model=self.model)
         self.history = []
@@ -136,8 +165,13 @@ class PersonalizedAssistant:
         Never raises: a missing/unavailable microphone, listening timeouts
         and unrecognized speech all just return None so callers (HUD, wake
         word, phone link) never crash on mic problems.
+
+        While ``is_processing`` is set a capture is normally refused (callers
+        guard against overlapping mic sessions) — except for the intentional
+        nested follow-up inside handle_command, allowed when
+        ``_allow_nested_listen`` is True.
         """
-        if self.is_processing:
+        if self.is_processing and not self._allow_nested_listen:
             return None
         recognizer = sr.Recognizer()
         recognizer.energy_threshold = 300
@@ -493,13 +527,12 @@ class PersonalizedAssistant:
                 play_on_youtube(video)
             return True
 
-        if 'bye' in lowered or 'goodbye' in lowered:
+        if is_farewell(query):
             self.speak(f'See ya, {self.username}! Ping me anytime!')
             self.summarize_and_save_history()
-            time.sleep(2)
-            exit(0)
-            # exit() kills the CLI process; returning True keeps this
-            # branch honest if exit is ever stubbed (tests, embedding).
+            # Never exit() from a library method — the GUI and phone link
+            # own the process lifecycle and intercept farewells before
+            # commands. Exiting here would kill the whole app mid-use.
             return True
 
         # 6. personal memory — learn facts the user shares ("my name is X",

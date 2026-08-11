@@ -38,7 +38,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from core.assistant import PersonalizedAssistant, load_history
+from core.assistant import PersonalizedAssistant, is_farewell, load_history
 from core.ollama import BIG_MODEL, DEFAULT_MODEL, split_deep_marker
 from functions.online_ops import (
     find_my_ip, get_city_from_ip, get_latest_news, get_random_joke,
@@ -728,6 +728,7 @@ class AssistantWorker(QObject):
     listening_finished = pyqtSignal(object)  # query text or None
     wake_detected = pyqtSignal()      # 'hey jarvis' heard
     wake_state = pyqtSignal(bool)     # wake-word loop started / stopped
+    processed = pyqtSignal()          # a request finished processing
 
     def __init__(self, assistant):
         super().__init__()
@@ -738,6 +739,8 @@ class AssistantWorker(QObject):
         self.wake_active = False # wake-word loop running
         self.wake = None         # WakeWordListener instance
         self._wake_capture = False  # True while capturing a command after a wake
+        self._mic_convo = False   # conversation mode: auto-listen after replies
+        self._convo_after = False # this capture starts/keeps conversation mode
         self._busy_lock = threading.Lock()
 
     # -- helpers -----------------------------------------------------------
@@ -792,7 +795,7 @@ class AssistantWorker(QObject):
                 return
 
             # farewell: end the session without closing the app
-            if "bye" in lowered or "goodbye" in lowered:
+            if is_farewell(msg):
                 text = f"See ya, {self.assistant.username}! Ping me anytime!"
                 self.assistant.history.append(f"User: {msg}")
                 self.assistant.history.append(f"AI: {text}")
@@ -800,6 +803,8 @@ class AssistantWorker(QObject):
                     target=self.assistant.summarize_and_save_history,
                     daemon=True,
                 ).start()
+                # a goodbye ends the voice conversation session too
+                self.worker._mic_convo = False
                 self.reply_line(text)
                 return
 
@@ -828,6 +833,7 @@ class AssistantWorker(QObject):
         finally:
             self.assistant.is_processing = False
             self.status.emit("READY")
+            self.processed.emit()
 
     def _run_command(self, lowered):
         """Run handle_command, forwarding spoken announcements to the log."""
@@ -880,15 +886,43 @@ class AssistantWorker(QObject):
             self.assistant.ollama.model = self.assistant.model
 
     # -- microphone ----------------------------------------------------------
-    def start_listening(self):
+    def start_listening(self, convo=False):
+        """Capture one spoken command.
+
+        convo=True keeps conversation mode going after this capture: once the
+        reply has been spoken, the mic opens again for the next command.
+        """
+        self._convo_after = convo
+        self._start_capture(from_wake=False)
+
+    def start_wake_followup_capture(self):
+        """Conversation mode: capture the next command without needing the
+        wake word again. Runs once the previous reply has been spoken."""
+        self._convo_after = True
+        self._start_capture(from_wake=False)
+
+    def _start_capture(self, from_wake=False):
+        """Run one mic capture on a background thread.
+
+        from_wake=True means the wake word just fired: conversation mode
+        begins. Either way the wake-word loop stays paused (via
+        _wake_capture) for the whole capture so two mic streams never fight
+        — harmless when no wake loop is running (manual MIC / auto-mic).
+        """
         with self._busy_lock:
             if self.assistant.is_processing or self.listening:
                 return
             self.listening = True
+        self._wake_capture = True
+        if from_wake:
+            self._mic_convo = True
         self.status.emit("LISTENING")
-        threading.Thread(target=self._listen_thread, daemon=True).start()
+        threading.Thread(target=self._capture_thread, daemon=True).start()
 
-    def _listen_thread(self):
+    def _capture_thread(self):
+        # give the wake-word engine a moment to release its mic stream
+        # (it re-checks _wake_paused every ~80 ms) before we open the mic
+        time.sleep(0.2)
         self.tts.capture = True
         self.tts.on_speak = lambda t: self.line.emit(t, "sys")
         try:
@@ -899,8 +933,11 @@ class AssistantWorker(QObject):
         finally:
             self.tts.capture = False
             self.tts.on_speak = None
+            self._wake_capture = False
             with self._busy_lock:
                 self.listening = False
+        if query and self._convo_after:
+            self._mic_convo = True
         self.listening_finished.emit(query)
 
     # -- wake word ------------------------------------------------------------
@@ -946,16 +983,7 @@ class AssistantWorker(QObject):
         resumes listening afterwards. Never gets stuck: even if the mic
         fails, the wake loop is unpaused and the GUI is told we're done."""
         self.wake_detected.emit()
-        self._wake_capture = True
-        self.status.emit("LISTENING")
-        try:
-            query = self.assistant.listen()
-        except Exception as e:
-            print(f"[gui wake] listen error: {e}")
-            query = None
-        finally:
-            self._wake_capture = False
-        self.listening_finished.emit(query)
+        self._start_capture(from_wake=True)
 
     # -- quick actions --------------------------------------------------------
     def _launch(self, announce, fn):
@@ -964,6 +992,9 @@ class AssistantWorker(QObject):
             if self.assistant.is_processing:
                 return
             self.assistant.is_processing = True
+        # quick actions are keyboard interactions — they end the voice
+        # conversation session (mirrors typing in the input bar)
+        self._mic_convo = False
         self.status.emit("PROCESSING")
         if announce:
             self.say(announce, "sys")
@@ -1484,6 +1515,7 @@ class MainWindow(QMainWindow):
         w.listening_finished.connect(self._on_listening_finished)
         w.wake_detected.connect(self._on_wake_detected)
         w.wake_state.connect(self._on_wake_state)
+        w.processed.connect(self._on_processed)
 
     def _start_timers(self):
         self._metrics_timer = QTimer(self)
@@ -1757,13 +1789,50 @@ class MainWindow(QMainWindow):
                 target=self.worker.process, args=(query,), daemon=True
             ).start()
         else:
-            self._on_status("READY")
+            # nothing heard — the conversation session ends
+            self.worker._mic_convo = False
+            if self.worker.wake_active:
+                self._on_status("STANDBY")
+            else:
+                self._on_status("READY")
+
+    def _on_processed(self):
+        """After a voice-captured request finishes, open the mic again
+        automatically (conversation mode) so the user never has to say
+        'hey Jarvis' again. Silence ends the session and returns to
+        standby."""
+        if not self.worker._mic_convo:
+            return
+        if not (self._mic_ok and not self.assistant.is_processing):
+            return
+        self._schedule_convo_listen()
+
+    def _schedule_convo_listen(self):
+        """Wait for the spoken reply to finish, then capture the next
+        command. Bails out if JARVIS is still talking after 30s so its own
+        voice is never captured as a command."""
+
+        def poll(waited):
+            if self.assistant.tts.is_busy() and waited < 30000:
+                QTimer.singleShot(200, lambda: poll(waited + 200))
+                return
+            if self.assistant.tts.is_busy():
+                return
+            if not (self.worker._mic_convo and self._mic_ok
+                    and not self.assistant.is_processing):
+                return
+            self.log.enqueue_line("Listening for your next command...", "sys")
+            self.worker.start_wake_followup_capture()
+
+        QTimer.singleShot(500, lambda: poll(0))
 
     def _send(self):
         text = self.input.text().strip()
         if not text:
             return
         self.input.clear()
+        # typing ends voice conversation mode — don't grab the mic afterwards
+        self.worker._mic_convo = False
         threading.Thread(
             target=self.worker.process, args=(text,), daemon=True
         ).start()
@@ -1792,7 +1861,7 @@ class MainWindow(QMainWindow):
                     and not self.assistant.is_processing):
                 self.log.enqueue_line(
                     "Listening for your command...", "sys")
-                self.worker.start_listening()
+                self.worker.start_listening(convo=True)
 
         QTimer.singleShot(500, lambda: poll(0))
 
@@ -1828,6 +1897,7 @@ class MainWindow(QMainWindow):
         else:
             self._wake_pending = False
             self.worker.stop_wake_loop()
+            self.worker._mic_convo = False
         self.log.enqueue_line(
             "Wake-word ON — I'll only answer to 'Hey Jarvis'." if on
             else "Wake-word OFF — use the MIC button or typing instead.",
@@ -1933,6 +2003,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         try:
+            self.worker._mic_convo = False
             self.worker.stop_wake_loop()
             if self.assistant.history:
                 threading.Thread(

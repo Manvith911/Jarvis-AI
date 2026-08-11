@@ -38,6 +38,7 @@ import threading
 
 from decouple import config
 
+from core.assistant import is_farewell
 from core.ollama import BIG_MODEL, split_deep_marker
 from functions.online_ops import (
     have_internet, play_on_youtube, search_on_wikipedia,
@@ -405,7 +406,7 @@ class PhoneLinkServer:
                     return
 
                 # -- farewell: never let handle_command's exit(0) kill the app
-                if "bye" in lowered or "goodbye" in lowered:
+                if is_farewell(msg):
                     text = f"See ya, {assistant.username}! Ping me anytime!"
                     assistant.history.append(f"User: {msg}")
                     assistant.history.append(f"AI: {text}")
@@ -431,12 +432,16 @@ class PhoneLinkServer:
                 # forwarding it to the desktop speaker: a phone request
                 # replies on the phone only.
                 old_speak = assistant.tts.speak
+                old_nested = getattr(assistant, "_allow_nested_listen", True)
                 captured = []
 
                 def _collect(text):
                     captured.append(text)
 
                 assistant.tts.speak = _collect
+                # phone requests must never grab the desktop microphone for
+                # handle_command's nested wikipedia/youtube follow-ups
+                assistant._allow_nested_listen = False
                 try:
                     # -- local / online commands -----------------------------
                     try:
@@ -483,6 +488,7 @@ class PhoneLinkServer:
                         assistant.history.append(f"AI: {reply}")
                 finally:
                     assistant.tts.speak = old_speak
+                    assistant._allow_nested_listen = old_nested
             except Exception as e:
                 print(f"[phone] handler error: {e}")
                 yield "Yikes, something went wrong on my end."

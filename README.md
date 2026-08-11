@@ -26,6 +26,7 @@ Unlike cloud assistants, your **AI answers and voice replies never leave your PC
 
 ### 🔥 Features
 - 🗣️ **Voice-controlled assistant** – Uses speech recognition to process commands.
+- 💬 **Conversation mode** – Wake J.A.R.V.I.S. once with "Hey Jarvis" and keep talking: after every reply it listens again for your next command, so you can chain *"what's the weather" → "open youtube" → "tell me a joke"* without repeating the wake word. It only goes back to standby after a few seconds of silence (or when you type, click a quick action, or say *"bye"*).
 - 🤖 **AI-powered responses** – Uses local Ollama models (Qwen 3) for intelligent interaction.
 - 💻 **PC control capabilities** – Opens apps & websites in your browser of choice ("open github in brave"), takes screenshots (saved to the `screenshots/` folder), and runs system commands.
 - 🎙️ **Voice in, voice out** – Replies are spoken fully offline (SAPI5); hearing you uses Google's free speech-to-text API (needs internet).
@@ -141,7 +142,7 @@ All variables and where to get the free API keys are explained inside `.env.exam
 - **Windows:** double-click `run.bat`
 - **Any OS:** `python main.py`
 
-The HUD opens, greets you out loud, and **starts listening for your voice right away**. By default it runs in **wake-word mode**: stand by, say **"Hey Jarvis"**, and it wakes to take your command.
+The HUD opens, greets you out loud, and **starts listening for your voice right away**. By default it runs in **wake-word mode**: stand by, say **"Hey Jarvis"**, and it wakes to take your command — then **stays in conversation**, listening for your next command automatically until you go quiet for a few seconds.
 
 > 🧠 **Wake word first run:** the first time the HUD starts with wake-word ON, it downloads the small offline "hey jarvis" model automatically (one-time, needs internet). After that it works offline. If `openwakeword` isn't installed, it falls back to the online recognizer.
 
@@ -166,6 +167,7 @@ You get:
 - 💬 Streaming chat log with a **typewriter effect** (colored `You:` / `JARVIS:` entries)
 - 🎙️ **Voice input** — the HUD **starts listening automatically as soon as it opens** (right after its greeting), and you can re-trigger it with the MIC button. The **AUTO-MIC** toggle in the side panel turns this off/on (remembered between sessions)
 - 🗣️ **"Hey Jarvis" wake word** — the HUD stands by, listening continuously, and only wakes when you address it. Runs **fully offline** (openWakeWord), instant and free. Toggle with the **WAKE** button (remembered between sessions). When ON, it replaces the one-shot auto-listen
+- 💬 **Conversation mode** — once woken (or after auto-mic starts listening), J.A.R.V.I.S. stays in the conversation: after every reply it re-opens the mic for your next command, no "Hey Jarvis" needed. Silence for a few seconds (or typing, clicking a quick action, or saying *bye*) returns it to standby
 - 🗣️ **Voice replies** via TTS (toggle with the SPEAKER button)
 - ⚙️ **STARTUP toggle** — the **STARTUP: ON/OFF** button switches **launching J.A.R.V.I.S. at Windows startup** on and off, right from inside the HUD (no .bat files needed). When **OFF**, it won't start on boot
 - 🚀 **Ollama auto-start** — if the local Ollama server is offline when the HUD opens (typical right after a reboot), J.A.R.V.I.S. starts it automatically in the background and waits until it's online, so your first question always gets answered
@@ -185,6 +187,8 @@ You get:
 | `my name is Sam` / `I like chess` / `my favourite colour is blue` | **Remembers it** and confirms |
 | `what do you know about me` | Recaps everything it remembers |
 | `forget everything` | Wipes its memory of you |
+| `bye` / `goodbye` / `see you` | Ends the chat, saves a summary, and returns to standby |
+| (after *"Hey Jarvis"*) keep talking | Every follow-up command is picked up automatically — the wake word is only needed once |
 | `tell me about narendra modi` / `who is Einstein` / `give me information on black holes` | Auto-searches the web and answers with real facts |
 | `ULTRATHINK: explain black holes` | Answers with the bigger, smarter model (when you've pulled one) |
 | Scan the **PHONE LINK** QR with your phone's camera | Opens J.A.R.V.I.S. in the phone browser (same Wi-Fi) — chat, commands, voice input, quick actions |
