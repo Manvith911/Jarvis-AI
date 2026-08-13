@@ -33,6 +33,37 @@ _model = None
 _loaded = False
 
 
+# Whisper's accuracy on short, quiet commands drops a lot when the input is
+# barely audible or has no context. These tune the local engine for exactly
+# that case (see transcribe_local below).
+_WHISPER_INITIAL_PROMPT = (
+    "The following is a short voice command spoken to a personal assistant:"
+)
+
+
+def new_recognizer():
+    """Build a speech_recognition Recognizer tuned for quiet speakers.
+
+    The library's stock VAD calibrates its energy threshold with a very slow
+    asymmetric average (damping 0.97) toward ``ambient * 1.5``, starting from
+    a hardcoded 300. In practice the threshold barely moves during the short
+    calibration window, so it sits far above quiet speech and soft commands
+    are never heard at all (``listen()`` just times out).
+
+    Lowering the ratio and damping makes the calibration converge close to
+    the real noise floor in the ~0.5 s window, so normal AND quiet voices
+    cross the threshold. Callers still call ``adjust_for_ambient_noise``
+    before ``listen`` and may floor the result (see core/assistant.py).
+    """
+    import speech_recognition as sr
+    recognizer = sr.Recognizer()
+    recognizer.energy_threshold = 150
+    recognizer.dynamic_energy_threshold = True
+    recognizer.dynamic_energy_ratio = 1.2          # default 1.5
+    recognizer.dynamic_energy_adjustment_damping = 0.6   # default 0.97
+    return recognizer
+
+
 def _load_model():
     """Load the local whisper model once. Returns the model or None."""
     global _model, _loaded
@@ -73,8 +104,24 @@ def transcribe_local(audio):
         raw = audio.get_raw_data(convert_rate=16000, convert_width=2)
         samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
         samples /= 32768.0
+        # Whisper expects normal-level audio; quiet speech (soft voices, mic
+        # too far) reaches the model as a near-silent whisper and gets
+        # misheard. Boost low-level input so the model hears it clearly,
+        # capped so background noise isn't amplified into the transcript.
+        peak = float(np.max(np.abs(samples))) if samples.size else 0.0
+        if 0.0 < peak < 0.35:
+            samples = samples * min(1.0 / peak, 4.0)
         segments, _info = model.transcribe(
-            samples, language=WHISPER_LANGUAGE, beam_size=5)
+            samples,
+            language=WHISPER_LANGUAGE,
+            beam_size=5,
+            # short isolated commands: don't let whisper condition on a
+            # previous (empty) context, which causes hallucinated repeats
+            condition_on_previous_text=False,
+            # orient the model toward a short voice command — this noticeably
+            # reduces mis-transcriptions of commands like "open chrome"
+            initial_prompt=_WHISPER_INITIAL_PROMPT,
+        )
         text = " ".join(seg.text.strip() for seg in segments).strip()
         return text or None
     except Exception as e:

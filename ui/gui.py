@@ -811,10 +811,8 @@ class AssistantWorker(QObject):
 
     def _interrupt_loop(self):
         import speech_recognition as sr
-        from core.stt import transcribe
-        recognizer = sr.Recognizer()
-        recognizer.energy_threshold = 300
-        recognizer.dynamic_energy_threshold = True
+        from core.stt import new_recognizer, transcribe
+        recognizer = new_recognizer()
         while self._interrupt_on:
             if not self.assistant.tts.is_busy():
                 time.sleep(0.3)
@@ -825,7 +823,10 @@ class AssistantWorker(QObject):
                 continue
             try:
                 with sr.Microphone() as source:
-                    recognizer.adjust_for_ambient_noise(source, duration=0.2)
+                    recognizer.adjust_for_ambient_noise(source, duration=0.3)
+                    # same quiet-speaker floor as the command capture path
+                    recognizer.energy_threshold = max(
+                        recognizer.energy_threshold, 60)
                     audio = recognizer.listen(source, timeout=1,
                                               phrase_time_limit=1.5)
             except Exception:

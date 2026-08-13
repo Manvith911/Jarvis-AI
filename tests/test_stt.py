@@ -25,6 +25,28 @@ class LocalSttTests(unittest.TestCase):
         with patch.object(stt, "_load_model", return_value=fake_model):
             self.assertEqual(stt.transcribe_local(audio), "Hello world")
 
+    def test_transcribe_local_boosts_quiet_audio(self):
+        """Low-level (quiet) speech is amplified before reaching whisper,
+        and short-command tuning flags are passed through."""
+        import numpy as np
+        import struct
+        fake_model = MagicMock()
+        seg = MagicMock()
+        seg.text = "hi"
+        fake_model.transcribe.return_value = ([seg], None)
+        # ~0.2s of quiet speech: int16 samples peaking around 0.02 (quiet)
+        quiet = struct.pack("<%dh" % 3200, *([600] * 3200))
+        audio = MagicMock()
+        audio.get_raw_data.return_value = quiet
+        with patch.object(stt, "_load_model", return_value=fake_model):
+            self.assertEqual(stt.transcribe_local(audio), "hi")
+        args, kwargs = fake_model.transcribe.call_args
+        samples = args[0]
+        # 600/32768 ~= 0.018 -> boosted by the capped gain, well above 0.03
+        self.assertGreater(float(np.max(np.abs(samples))), 0.03)
+        self.assertFalse(kwargs["condition_on_previous_text"])
+        self.assertIn("voice command", kwargs["initial_prompt"])
+
     def test_transcribe_falls_back_to_google(self):
         """Local says nothing -> recognizer.recognize_google is used."""
         audio = MagicMock()

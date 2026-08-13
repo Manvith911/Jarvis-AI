@@ -219,9 +219,8 @@ class WakeWordListener:
     def _run_online(self):
         """Energy-gated fallback using Google speech recognition."""
         import speech_recognition as sr
-        recognizer = sr.Recognizer()
-        recognizer.energy_threshold = 300
-        recognizer.dynamic_energy_threshold = True
+        from core.stt import new_recognizer
+        recognizer = new_recognizer()
         cooldown = 0.0
         print("[wake] online fallback listening (Google speech recognition)")
         while self.running:
@@ -235,6 +234,8 @@ class WakeWordListener:
             try:
                 with sr.Microphone() as source:
                     recognizer.adjust_for_ambient_noise(source, duration=0.4)
+                    recognizer.energy_threshold = max(
+                        recognizer.energy_threshold, 60)
                     audio = recognizer.listen(source, timeout=2,
                                               phrase_time_limit=3)
                 if not self.running:

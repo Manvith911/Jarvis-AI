@@ -15,7 +15,7 @@ from decouple import config
 
 from .ollama import OllamaError, StreamingOllama, check_model
 from .speech import Speech, strip_for_speech
-from .stt import transcribe_local
+from .stt import new_recognizer, transcribe_local
 from .timers import (
     TimerManager, format_duration, parse_reminder_command,
     parse_time_reply, parse_timer_command,
@@ -217,15 +217,19 @@ class PersonalizedAssistant:
         """
         if self.is_processing and not self._allow_nested_listen:
             return None
-        recognizer = sr.Recognizer()
-        recognizer.energy_threshold = 300
-        recognizer.dynamic_energy_threshold = True
+        recognizer = new_recognizer()
         try:
             with sr.Microphone() as source:
                 print('Listening...')
                 try:
-                    recognizer.adjust_for_ambient_noise(source, duration=0.5)
-                    audio = recognizer.listen(source, timeout=3,
+                    recognizer.adjust_for_ambient_noise(source, duration=0.7)
+                    # calibration lands around ambient*ratio — floor it so
+                    # quiet voices still cross the threshold (the listener
+                    # pauses on anything below it, so a sane floor also keeps
+                    # phrase-ending silence detectable)
+                    recognizer.energy_threshold = max(
+                        recognizer.energy_threshold, 60)
+                    audio = recognizer.listen(source, timeout=5,
                                               phrase_time_limit=5)
                     print('Recognizing...')
                     # local whisper first (offline), Google as fallback
