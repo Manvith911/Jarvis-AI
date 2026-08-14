@@ -10,7 +10,7 @@
 #    - No execution-time limit (the HUD is a long-running app)
 #    - Never starts a second instance if one is already running
 #
-#  Needs administrator rights (called from enable_autostart.bat).
+#  Needs administrator rights (called by the HUD's STARTUP toggle).
 # ============================================================
 $ErrorActionPreference = 'Stop'
 

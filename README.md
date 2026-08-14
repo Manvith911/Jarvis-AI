@@ -215,18 +215,12 @@ Want the assistant up and listening the moment you sit down — with **no consol
 1. Click the **STARTUP** button in the side panel until it reads **`STARTUP: ON`**.
 2. That's it — it creates the autostart entry for you. No .bat files and no admin rights needed (it falls back to the Startup-folder method automatically). Toggle it back to **`STARTUP: OFF`** anytime to stop launching at startup.
 
-**Manual way — one double-click:**
-1. Double-click **`enable_autostart.bat`**.
-2. That's it. J.A.R.V.I.S. now launches **silently** at every startup via `autostart.vbs` (`pythonw.exe`, no black console window) and **starts listening immediately**.
+**How it works:** the STARTUP button tries the two methods in order:
+1. **Task Scheduler** (preferred) — a *"JARVIS Assistant"* task fires at boot and starts the HUD ~20 seconds in, once audio/network drivers are ready, right as your desktop appears. It's set to **auto-restart if the HUD ever crashes** (retries every 1 minute, up to 3 times) and never stops it for running too long, so J.A.R.V.I.S. stays up. Creating the task needs administrator rights.
+2. **Startup folder** (automatic fallback) — if Task Scheduler needs admin rights you don't have, it creates a Startup-folder shortcut (launching `autostart.vbs` via `pythonw.exe`, no black console window) instead. Same visible behavior; it just launches at logon rather than at boot.
 
-The script tries the two methods in order:
-1. **Task Scheduler** (preferred) — a *"JARVIS Assistant"* task fires at boot and starts the HUD ~20 seconds in, once audio/network drivers are ready, right as your desktop appears. It's set to **auto-restart if the HUD ever crashes** (retries every 1 minute, up to 3 times) and never stops it for running too long, so J.A.R.V.I.S. stays up.
-2. **Startup folder** (automatic fallback) — if Task Scheduler needs admin rights you don't have, it creates a Startup-folder shortcut instead. Same visible behavior; it just launches at logon rather than at boot.
-
-To stop it from auto-starting, double-click **`disable_autostart.bat`** — it removes whichever method is active. The HUD's **STARTUP** button does the same thing in one click.
-
-> 🧠 No admin rights or stored password needed. Old entries are cleared first, so J.A.R.V.I.S. never launches twice.
-> 🔧 Want Task Scheduler specifically? Right-click `enable_autostart.bat` → **Run as administrator**. Inspect/edit the task anytime with `Win+R` → `taskschd.msc` → "JARVIS Assistant". Want the console visible for debugging? Run `run.bat` manually — that's still the normal (windowed) launcher.
+> 🧠 No admin rights or stored password needed for the fallback. Old entries are cleared first, so J.A.R.V.I.S. never launches twice.
+> 🔧 Inspect/edit the scheduled task anytime with `Win+R` → `taskschd.msc` → "JARVIS Assistant". Want the console visible for debugging? Run `run.bat` manually — that's still the normal (windowed) launcher.
 > 🚀 **Ollama comes along too:** the autostart entry launches the HUD, and the HUD then makes sure the Ollama server is running — so the AI answers the moment you ask, even right after a restart.
 
 ### 📱 Phone link (use J.A.R.V.I.S. from your phone)
@@ -289,10 +283,8 @@ Want J.A.R.V.I.S. in your pocket? The HUD starts a tiny local web server (a **PH
 │   ├── tests/                    # Unit tests — python -m unittest discover tests -v;
 │   ├── requirements.txt          # All Python dependencies — pip install -r requirements.txt;
 │   ├── run.bat                   # One double-click launcher (Windows, shows a console);
-│   ├── autostart.vbs             # Silent launcher fallback (pythonw, no console; used when the venv is missing);
-│   ├── enable_autostart.bat      # Registers a Task Scheduler task that starts the HUD at boot;
-│   ├── enable_startup_task.ps1   # PowerShell helper for the task (crash-restart settings);
-│   ├── disable_autostart.bat     # Deletes the scheduled task again;
+│   ├── autostart.vbs             # Silent launcher fallback (pythonw, no console);
+│   ├── enable_startup_task.ps1   # PowerShell helper for the scheduled task (crash-restart settings);
 │   └── .env                      # Your real secrets & settings (gitignored, never committed)
 ```
 ---

@@ -1,7 +1,6 @@
 """Enable / disable J.A.R.V.I.S. at Windows startup.
 
-The HUD's STARTUP toggle uses this instead of the manual .bat files. Two
-methods exist, mirroring enable_autostart.bat:
+The HUD's STARTUP toggle is the only interface. Two methods exist:
 
 1. A Task Scheduler task ("JARVIS Assistant") firing at boot - preferred,
    but creating it needs administrator rights.

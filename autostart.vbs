@@ -3,8 +3,8 @@
 '  Launches main.py with pythonw.exe so NO console window
 '  appears when Windows starts the assistant at login.
 '
-'  Used by enable_autostart.bat (the Windows scheduled task
-'  points at this file). Safe to delete or edit.
+'  Used by the HUD's STARTUP toggle (the Windows scheduled
+'  task points at this file). Safe to delete or edit.
 ' ============================================================
 Option Explicit
 
