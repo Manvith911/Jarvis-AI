@@ -112,6 +112,17 @@ class SystemCommandTests(unittest.TestCase):
         mp.assert_not_called()
         yt.assert_called_once_with("despacito")
 
+    def test_play_news_on_youtube_goes_to_youtube_not_news(self):
+        """A 'play X on youtube' request must reach YouTube even when X
+        contains a quick-command keyword ('news', 'weather', 'joke'...)."""
+        with patch("core.assistant.play_on_youtube") as yt, \
+                patch.object(self.assistant, "report_news") as news, \
+                patch("core.assistant.have_internet", return_value=True):
+            self.assertTrue(
+                self.assistant.handle_command("play some news on youtube"))
+        yt.assert_called_once()
+        news.assert_not_called()
+
     def test_stop_music(self):
         with patch("core.assistant.media_stop", return_value=True) as ms:
             self.assertTrue(self.assistant.handle_command("stop the music"))

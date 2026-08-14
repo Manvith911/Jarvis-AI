@@ -892,7 +892,7 @@ class AssistantWorker(QObject):
                     daemon=True,
                 ).start()
                 # a goodbye ends the voice conversation session too
-                self.worker._mic_convo = False
+                self._mic_convo = False
                 self.reply_line(text)
                 return
 

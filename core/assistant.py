@@ -7,6 +7,7 @@ history persistence.
 
 import os
 import re
+import sys
 import time
 from datetime import datetime
 
@@ -157,6 +158,76 @@ def is_farewell(text):
         return False
     return bool(re.search(
         r"\b(bye|goodbye|good\s+night|see\s+ya|see\s+you)\b", t))
+
+
+# ---------------------------------------------------------------------------
+# Safe printing — consoles that can't encode emoji/℃ (cp1252) must never
+# crash the assistant, even when running outside main.py's utf-8 setup.
+# ---------------------------------------------------------------------------
+def _safe_print(*args, **kwargs):
+    """print() that never raises on characters the console can't encode."""
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        kwargs.pop("file", None)
+        safe = []
+        for a in args:
+            safe.append(a.encode(enc, "replace").decode(enc)
+                        if isinstance(a, str) else a)
+        print(*safe, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Quick-command matching ("weather", "joke", "news", ...)
+# ---------------------------------------------------------------------------
+# A plain substring check makes ordinary chat trigger commands: "i read the
+# newspaper" fires news, "what about the weatherman" fires weather, "you're
+# a joke" fires joke. So a quick command only counts when the keyword is a
+# whole word (plurals allowed) AND the phrase clearly requests it — the
+# keyword leads, the message is short, or a request word sits just before
+# it. Statements ("this weather is nice", "you're a joke") fall through to
+# normal chat.
+_QUICK_PLURALS = {"joke": "jokes", "screenshot": "screenshots"}
+
+_QUICK_REQUEST_BEFORE = {
+    "what", "whats", "what's", "how", "hows", "how's", "tell", "give",
+    "gimme", "get", "show", "check", "any", "play", "another", "latest",
+    "top", "current", "today", "today's", "todays", "some", "about",
+    "update", "headlines", "hear", "want", "need", "would", "can",
+    "could", "do", "does", "is", "are",
+}
+
+_QUICK_STATEMENT_STARTS = (
+    "you're", "you are", "i'm", "i am", "this is", "that is", "it's",
+    "it is", "there is", "there are", "i like", "i love", "i hate",
+    "i read", "i saw", "i heard", "i think", "i know",
+)
+
+
+def _is_quick_command(text, key):
+    """True when ``text`` is a REQUEST for the quick command ``key``."""
+    t = strip_politeness(text).strip(" \t.,!?")
+    if not t:
+        return False
+    low = t.lower()
+    # multi-word keys ("ip address", "my ip") are unambiguous as-is
+    if " " in key:
+        return bool(re.search(r"\b" + re.escape(key) + r"\b", low))
+    if low.startswith(_QUICK_STATEMENT_STARTS):
+        return False
+    words = low.split()
+    idx = None
+    for i, w in enumerate(words):
+        if w == key or w == _QUICK_PLURALS.get(key, ""):
+            idx = i
+            break
+    if idx is None:
+        return False
+    if idx == 0 or len(words) <= 3:
+        return True
+    return any(w in _QUICK_REQUEST_BEFORE
+               for w in words[max(0, idx - 3):idx])
 
 class PersonalizedAssistant:
     def __init__(self, model_name, botname, history_text, tts=None):
@@ -346,7 +417,7 @@ class PersonalizedAssistant:
 
         try:
             for token in self.ollama.generate_stream(prompt):
-                print(token, end="", flush=True)
+                _safe_print(token, end="", flush=True)
                 yield token
                 if speak:
                     buffer += token
@@ -360,7 +431,7 @@ class PersonalizedAssistant:
         except OllamaError as e:
             # Ollama offline / model missing: never leak a raw error token
             # to the screen or speakers — say something helpful instead.
-            print(f"\n[assistant] Ollama unavailable: {e}")
+            _safe_print(f"\n[assistant] Ollama unavailable: {e}")
             friendly = self._ollama_fallback_message()
             yield friendly
             if speak:
@@ -381,11 +452,8 @@ class PersonalizedAssistant:
                 "Try asking me again in a moment.")
 
     def speak(self, text):
-        try:
-            print(f"{self.botname}: {text}")
-        except UnicodeEncodeError:
-            # some consoles (cp1252) can't print emoji like ⏰ — never crash
-            print(strip_for_speech(f"{self.botname}: {text}"))
+        # some consoles (cp1252) can't print emoji like ⏰ or ℃ — never crash
+        _safe_print(f"{self.botname}: {text}")
         self.tts.speak(text)
 
     def wait_for_speech_completion(self):
@@ -468,7 +536,7 @@ class PersonalizedAssistant:
         except Exception as e:
             print(f"[assistant] could not save history: {e}")
             return
-        print(f"\n[History saved]\n{summary_with_date}\n")
+        _safe_print(f"\n[History saved]\n{summary_with_date}\n")
 
     def handle_command(self, query):
         """Handle non-chat commands. Return True if handled, else False."""
@@ -527,7 +595,8 @@ class PersonalizedAssistant:
                 self.speak("Couldn't open that. My bad!")
             return True
 
-        # 2. fixed quick commands
+        # 2. fixed quick commands (matched only when clearly requested —
+        #    casual mentions like "this weather is nice" stay chat)
         commands = {
             'ip address': (self._report_ip, None),
             'my ip': (self._report_ip, None),
@@ -536,16 +605,21 @@ class PersonalizedAssistant:
             'news': (self.report_news, None),
             'screenshot': (self._announce_screenshot, "Screenshot time! Hold still..."),
         }
-        for key, (func, announce) in commands.items():
-            if key in lowered:
-                if announce:
-                    self.speak(announce)
-                try:
-                    func()
-                except Exception as e:
-                    self.speak(f"Couldn't run that command: {key}. My bad!")
-                    print(f"Command error ({key}): {e}")
-                return True
+        # a "play X on youtube" request must reach YouTube, never a quick
+        # command whose keyword happens to sit inside X ("play some news on
+        # youtube" used to read out the news instead of playing it)
+        if not re.search(r"\bon\s+youtube\b", lowered):
+            for key, (func, announce) in commands.items():
+                if _is_quick_command(lowered, key):
+                    if announce:
+                        self.speak(announce)
+                    try:
+                        func()
+                    except Exception as e:
+                        self.speak(
+                            f"Couldn't run that command: {key}. My bad!")
+                        _safe_print(f"Command error ({key}): {e}")
+                    return True
 
         # 3. system & media control (volume / mute / lock / battery / keys)
         if re.search(
