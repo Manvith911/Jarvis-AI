@@ -18,11 +18,16 @@ OLLAMA_URL = "http://localhost:11434"
 READY_TIMEOUT = 60  # seconds to wait for the server to come up after launch
 
 # Standard install locations for the Ollama app / server on Windows.
+# The headless CLI (ollama.exe serve) is preferred on purpose: newer
+# Ollama versions open their chat-panel window when "ollama app.exe" is
+# launched, which is exactly the annoying popup we don't want when
+# auto-starting the server in the background. The tray app is only a
+# fallback for installs that ship it without the CLI.
 OLLAMA_CANDIDATES = [
-    r"%LOCALAPPDATA%\Programs\Ollama\ollama app.exe",
     r"%LOCALAPPDATA%\Programs\Ollama\ollama.exe",
-    r"C:\Program Files\Ollama\ollama app.exe",
     r"C:\Program Files\Ollama\ollama.exe",
+    r"%LOCALAPPDATA%\Programs\Ollama\ollama app.exe",
+    r"C:\Program Files\Ollama\ollama app.exe",
 ]
 
 # Windows: don't pop a console window when spawning the server.

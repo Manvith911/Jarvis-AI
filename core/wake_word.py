@@ -123,10 +123,14 @@ class WakeWordListener:
                reply. The loop idles (mic closed) while paused.
     threshold: openwakeword detection score (0.0–1.0). Lower = more
                sensitive (a few more false wakes), higher = stricter.
+               Defaults to 0.5 — openwakeword's own recommended value.
+               (The "hey jarvis" model scores real detections far above
+               this, so it stays reliable while cutting noise-triggered
+               false wakes.)
     """
 
     def __init__(self, botname="jarvis", on_wake=None, is_paused=None,
-                 threshold=0.4):
+                 threshold=0.5):
         self.botname = (botname or "jarvis").lower()
         self.on_wake = on_wake
         self.is_paused = is_paused or (lambda: False)

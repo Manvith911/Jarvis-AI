@@ -15,7 +15,7 @@ from decouple import config
 
 from .ollama import OllamaError, StreamingOllama, check_model
 from .speech import Speech, strip_for_speech
-from .stt import new_recognizer, transcribe_local
+from .stt import has_audible_speech, new_recognizer, transcribe
 from .timers import (
     TimerManager, format_duration, parse_reminder_command,
     parse_time_reply, parse_timer_command,
@@ -232,19 +232,25 @@ class PersonalizedAssistant:
                     audio = recognizer.listen(source, timeout=5,
                                               phrase_time_limit=5)
                     print('Recognizing...')
-                    # local whisper first (offline), Google as fallback
-                    query = transcribe_local(audio)
-                    if query is None:
-                        query = recognizer.recognize_google(
-                            audio, language='en-in')
-                    print(f"You said: {query}")
-                    return query.lower()
+                    # local whisper first (offline), Google as fallback.
+                    # transcribe() never raises: it returns None for silence,
+                    # noise and unrecognized speech alike.
+                    query = transcribe(audio, recognizer, language='en-in')
+                    if query:
+                        print(f"You said: {query}")
+                        return query.lower()
+                    # Nothing was understood. Only apologize when the mic
+                    # actually caught speech-like sound — ambient noise that
+                    # tripped the VAD shouldn't trigger a spoken apology (or
+                    # a random "heard" command).
+                    if has_audible_speech(audio):
+                        print("Didn't understand audio")
+                        self.tts.speak(
+                            "Sorry, I couldn't catch that. Mind saying it again?")
+                    else:
+                        print("No speech heard")
                 except sr.WaitTimeoutError:
                     print("Timeout")
-                except sr.UnknownValueError:
-                    print("Didn't understand audio")
-                    self.tts.speak(
-                        "Sorry, I couldn't catch that. Mind saying it again?")
                 except Exception as e:
                     print(f"Recognition error: {e}")
         except Exception as e:

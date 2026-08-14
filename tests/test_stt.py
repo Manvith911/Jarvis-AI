@@ -16,12 +16,16 @@ class LocalSttTests(unittest.TestCase):
 
     def test_transcribe_local_uses_model(self):
         """A working local model transcribes the audio samples."""
+        import struct
         fake_model = MagicMock()
         seg = MagicMock()
         seg.text = "Hello world"
         fake_model.transcribe.return_value = ([seg], None)
         audio = MagicMock()
-        audio.get_raw_data.return_value = b"\x00\x00" * 1600  # ~0.05s silence
+        # ~0.05s of real (quiet) signal, not silence — digital silence is
+        # rejected before it ever reaches the model
+        audio.get_raw_data.return_value = struct.pack(
+            "<%dh" % 800, *([2000] * 800))
         with patch.object(stt, "_load_model", return_value=fake_model):
             self.assertEqual(stt.transcribe_local(audio), "Hello world")
 
@@ -46,6 +50,75 @@ class LocalSttTests(unittest.TestCase):
         self.assertGreater(float(np.max(np.abs(samples))), 0.03)
         self.assertFalse(kwargs["condition_on_previous_text"])
         self.assertIn("voice command", kwargs["initial_prompt"])
+
+    def test_transcribe_local_rejects_silence(self):
+        """Digital silence never reaches whisper — no hallucinated text."""
+        fake_model = MagicMock()
+        fake_model.transcribe.return_value = ([], None)
+        audio = MagicMock()
+        audio.get_raw_data.return_value = b"\x00\x00" * 1600  # ~0.05s silence
+        with patch.object(stt, "_load_model", return_value=fake_model):
+            self.assertIsNone(stt.transcribe_local(audio))
+        fake_model.transcribe.assert_not_called()
+
+    def test_transcribe_local_rejects_prompt_echo(self):
+        """Whisper echoing the initial prompt over noise is dropped."""
+        import struct
+        fake_model = MagicMock()
+        seg = MagicMock()
+        seg.text = ("The following is a short voice command spoken to a "
+                    "personal assistant: the following is a short voice "
+                    "command")
+        fake_model.transcribe.return_value = ([seg], None)
+        audio = MagicMock()
+        audio.get_raw_data.return_value = struct.pack(
+            "<%dh" % 800, *([2000] * 800))
+        with patch.object(stt, "_load_model", return_value=fake_model):
+            self.assertIsNone(stt.transcribe_local(audio))
+
+    def test_transcribe_local_rejects_no_speech_segment(self):
+        """Segments whisper flags as no-speech are dropped."""
+        import struct
+        fake_model = MagicMock()
+        seg = MagicMock()
+        seg.text = "random noise words"
+        seg.no_speech_prob = 0.9
+        fake_model.transcribe.return_value = ([seg], None)
+        audio = MagicMock()
+        audio.get_raw_data.return_value = struct.pack(
+            "<%dh" % 800, *([2000] * 800))
+        with patch.object(stt, "_load_model", return_value=fake_model):
+            self.assertIsNone(stt.transcribe_local(audio))
+
+    def test_transcribe_local_rejects_looping_text(self):
+        """Repetitive-loop hallucinations are rejected."""
+        import struct
+        fake_model = MagicMock()
+        seg = MagicMock()
+        seg.text = ("thank you for watching thank you for watching "
+                    "thank you for watching")
+        fake_model.transcribe.return_value = ([seg], None)
+        audio = MagicMock()
+        audio.get_raw_data.return_value = struct.pack(
+            "<%dh" % 800, *([2000] * 800))
+        with patch.object(stt, "_load_model", return_value=fake_model):
+            self.assertIsNone(stt.transcribe_local(audio))
+
+    def test_has_audible_speech(self):
+        """Noise-floor captures are 'inaudible'; real speech is not."""
+        import struct
+        quiet = MagicMock()
+        quiet.get_raw_data.return_value = struct.pack(
+            "<%dh" % 800, *([50] * 800))    # 50/32768 ~= 0.0015 — noise floor
+        self.assertFalse(stt.has_audible_speech(quiet))
+        mid = MagicMock()
+        mid.get_raw_data.return_value = struct.pack(
+            "<%dh" % 800, *([700] * 800))   # ~0.021 — ambient noise
+        self.assertFalse(stt.has_audible_speech(mid))
+        loud = MagicMock()
+        loud.get_raw_data.return_value = struct.pack(
+            "<%dh" % 800, *([2000] * 800))  # ~0.06 — real speech
+        self.assertTrue(stt.has_audible_speech(loud))
 
     def test_transcribe_falls_back_to_google(self):
         """Local says nothing -> recognizer.recognize_google is used."""
