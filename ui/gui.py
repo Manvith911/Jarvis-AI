@@ -891,8 +891,13 @@ class AssistantWorker(QObject):
                     target=self.assistant.summarize_and_save_history,
                     daemon=True,
                 ).start()
-                # a goodbye ends the voice conversation session too
+                # a goodbye ends the whole voice session: conversation mode
+                # AND the wake-word listener — no more listening afterwards
                 self._mic_convo = False
+                self.stop_wake_loop()
+                self.line.emit(
+                    "Listening stopped — say 'Hey Jarvis' or click MIC to "
+                    "talk again.", "sys")
                 self.reply_line(text)
                 return
 
@@ -2160,6 +2165,11 @@ class MainWindow(QMainWindow):
         self.log.enqueue_line("Wake word heard — listening...", "sys")
 
     def _on_wake_state(self, on):
+        """Keep the WAKE button in sync with the actual listener state (it
+        can be disarmed by a goodbye, not just by the toggle)."""
+        self._wake_word_enabled = bool(on)
+        self.wake_btn.setText("WAKE: ON" if on else "WAKE: OFF")
+        self.wake_btn.setStyleSheet(_BTN_ON_SS if on else _BTN_SS)
         if on:
             self._on_status("STANDBY")
             self.log.enqueue_line(

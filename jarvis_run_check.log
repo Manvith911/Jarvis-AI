@@ -1,4 +1,0 @@
-[gui] TTS ready
-[phone] J.A.R.V.I.S. phone link running at https://10.51.105.156:5080 (HTTPS, phone must be on the same Wi-Fi)
-[wake] offline 'hey jarvis' listening (openwakeword)
-[stt] local whisper 'base' ready (auto/int8)

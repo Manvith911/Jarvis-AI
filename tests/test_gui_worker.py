@@ -54,6 +54,18 @@ class FarewellTests(unittest.TestCase):
         worker.process("goodbye")
         self.assertFalse(worker._mic_convo)
 
+    def test_goodbye_disarms_wake_word_listener(self):
+        """Saying goodbye must stop the 'hey jarvis' listener too — the HUD
+        should not keep listening after the session ends."""
+        worker, _ = _make_worker()
+        fake_wake = MagicMock()
+        worker.wake_active = True
+        worker.wake = fake_wake
+        worker.process("bye")
+        self.assertFalse(worker.wake_active)
+        fake_wake.stop.assert_called_once()
+        self.assertIsNone(worker.wake)
+
 
 if __name__ == "__main__":
     unittest.main()
