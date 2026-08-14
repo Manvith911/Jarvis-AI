@@ -96,6 +96,41 @@ class OnlineOpsTests(unittest.TestCase):
             get.return_value.json.return_value = {"joke": ""}
             self.assertTrue(oo.get_random_joke().strip())
 
+    # -- news (key-free Google News RSS fallback) -----------------------
+    RSS = ("<rss version=\"2.0\"><channel>"
+           "<item><title>Headline one - The Hindu</title></item>"
+           "<item><title>Headline two - Times of India</title></item>"
+           "</channel></rss>")
+
+    def test_news_falls_back_to_keyless_rss(self):
+        """No API keys -> Google News RSS supplies the headlines, with the
+        trailing publisher stripped."""
+        with patch.object(oo, "GNEWS_API_KEY", ""), \
+                patch.object(oo, "NEWS_API_KEY", ""), \
+                patch.object(oo.requests, "get",
+                             return_value=SimpleNamespace(status_code=200,
+                                                          text=self.RSS)):
+            news = oo.get_latest_news()
+        self.assertEqual(news, ["Headline one", "Headline two"])
+
+    def test_news_prefers_configured_api(self):
+        """A configured GNews key wins over the key-free fallback."""
+        with patch.object(oo, "GNEWS_API_KEY", "abc"), \
+                patch.object(oo.requests, "get") as get:
+            get.return_value.json.return_value = {
+                "articles": [{"title": "API headline"}]}
+            self.assertEqual(oo.get_latest_news(), ["API headline"])
+
+    def test_news_returns_empty_when_all_sources_fail(self):
+        with patch.object(oo, "GNEWS_API_KEY", ""), \
+                patch.object(oo, "NEWS_API_KEY", ""), \
+                patch.object(oo.requests, "get",
+                             side_effect=Exception("no network")):
+            self.assertEqual(oo.get_latest_news(), [])
+
+    def test_parse_rss_titles_bad_xml(self):
+        self.assertEqual(oo._parse_rss_titles("<not xml"), [])
+
     # -- youtube fallback ---------------------------------------------
     def test_play_on_youtube_falls_back_without_pywhatkit(self):
         """pywhatkit missing must not raise — open a YouTube search page."""

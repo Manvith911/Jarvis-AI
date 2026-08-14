@@ -251,7 +251,9 @@ def get_latest_news():
     """Return up to 5 current headline titles.
 
     Uses GNews.io first (100 free requests/day), falling back to NewsAPI
-    (free dev tier) when no GNews key is configured or it errors out.
+    (free dev tier) when no GNews key is configured or it errors out, and
+    finally to Google News' key-free RSS feed — so news always works even
+    with no API keys configured at all.
     """
     if GNEWS_API_KEY:
         try:
@@ -281,7 +283,47 @@ def get_latest_news():
                     for a in res.get("articles", []) if a.get("title")][:5]
         except Exception as e:
             print(f"NewsAPI error: {e}")
+
+    # key-free fallback — Google News RSS (top stories, India edition) so
+    # the news command works out of the box with no API keys configured
+    try:
+        res = requests.get(
+            "https://news.google.com/rss",
+            params={"hl": "en-IN", "gl": "IN", "ceid": "IN:en"},
+            timeout=10,
+        )
+        if res.status_code == 200:
+            titles = _parse_rss_titles(res.text)
+            if titles:
+                return titles[:5]
+        print(f"Google News RSS returned nothing (HTTP {res.status_code})")
+    except Exception as e:
+        print(f"Google News RSS error: {e}")
     return []
+
+
+def _parse_rss_titles(xml_text):
+    """Extract item titles from an RSS feed (used by the key-free news
+    fallback). Google News titles end with " - Publisher", which is
+    stripped for a clean headline. Returns a list of unique titles."""
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.fromstring(xml_text)
+    except Exception:
+        return []
+    titles = []
+    for item in root.iter("item"):
+        title_el = item.find("title")
+        if title_el is None or not title_el.text:
+            continue
+        title = title_el.text.strip()
+        if " - " in title:
+            head, _, source = title.rpartition(" - ")
+            if head and source:
+                title = head.strip()
+        if title and title not in titles:
+            titles.append(title)
+    return titles
 
 
 # WeatherAPI.com — very generous free tier (1,000,000 calls/month) with
