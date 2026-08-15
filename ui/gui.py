@@ -896,8 +896,8 @@ class AssistantWorker(QObject):
                 self._mic_convo = False
                 self.stop_wake_loop()
                 self.line.emit(
-                    "Listening stopped — say 'Hey Jarvis' or click MIC to "
-                    "talk again.", "sys")
+                    "Listening stopped — click WAKE or MIC to talk again.",
+                    "sys")
                 self.reply_line(text)
                 return
 
@@ -930,8 +930,10 @@ class AssistantWorker(QObject):
 
     def _run_command(self, lowered):
         """Run handle_command, forwarding spoken announcements to the log."""
-        old_capture = self.tts.capture
-        old_hook = self.tts.on_speak
+        # getattr: only GuiSpeech carries these hooks — a plain Speech / a
+        # test double must not crash the worker just because it lacks them
+        old_capture = getattr(self.tts, "capture", False)
+        old_hook = getattr(self.tts, "on_speak", None)
         self.tts.capture = True
         self.tts.on_speak = lambda t: self.line.emit(t, "sys")
         try:
@@ -1068,6 +1070,9 @@ class AssistantWorker(QObject):
         except Exception as e:
             print(f"[gui wake] could not start wake word: {e}")
             self.wake_active = False
+            # tell the GUI the loop is NOT running so the WAKE button
+            # doesn't keep claiming it is
+            self.wake_state.emit(False)
             return
         self.wake_state.emit(True)
         self.wake.start()
@@ -2097,10 +2102,13 @@ class MainWindow(QMainWindow):
 
     def _toggle_mic(self):
         # a manual listen needs the mic free — pause the wake-word loop
-        # and restart it once this one-shot listen finishes
+        # and restart it once this one-shot listen finishes. Set the
+        # restart flag BEFORE stopping so _on_wake_state knows this stop
+        # is a transient pause (not a real disarm) and doesn't flip the
+        # WAKE button off or drop the user's wake-word setting.
         if self.worker.wake_active:
-            self.worker.stop_wake_loop()
             self._restart_wake_after_listen = True
+            self.worker.stop_wake_loop()
         self.worker.start_listening()
 
     def _schedule_autolisten(self):
@@ -2165,17 +2173,28 @@ class MainWindow(QMainWindow):
         self.log.enqueue_line("Wake word heard — listening...", "sys")
 
     def _on_wake_state(self, on):
-        """Keep the WAKE button in sync with the actual listener state (it
-        can be disarmed by a goodbye, not just by the toggle)."""
-        self._wake_word_enabled = bool(on)
-        self.wake_btn.setText("WAKE: ON" if on else "WAKE: OFF")
-        self.wake_btn.setStyleSheet(_BTN_ON_SS if on else _BTN_SS)
+        """Mirror the wake-word listener state on the WAKE button.
+
+        A stop is not always a real turn-off: a manual MIC listen pauses
+        the loop and restarts it when done (_restart_wake_after_listen),
+        so that stop must NOT flip the button off or clobber the user's
+        wake-word setting. Only a genuine disarm (goodbye, toggle-off or
+        a failed start) updates the button and the enabled flag.
+        """
         if on:
+            self._wake_word_enabled = True
+            self.wake_btn.setText("WAKE: ON")
+            self.wake_btn.setStyleSheet(_BTN_ON_SS)
             self._on_status("STANDBY")
             self.log.enqueue_line(
                 "Standing by — say 'Hey Jarvis' to wake me.", "sys")
-        elif not self.assistant.is_processing:
-            self._on_status("READY")
+        elif not self._restart_wake_after_listen:
+            # genuine disarm — the listener stays down until re-armed
+            self._wake_word_enabled = False
+            self.wake_btn.setText("WAKE: OFF")
+            self.wake_btn.setStyleSheet(_BTN_SS)
+            if not self.assistant.is_processing:
+                self._on_status("READY")
 
     def _on_model_changed(self, name):
         """Switch the active model used for the next question."""

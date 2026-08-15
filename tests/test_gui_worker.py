@@ -5,7 +5,7 @@ hardware, no windows are created.
 """
 
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from ui.gui import AssistantWorker
 
@@ -65,6 +65,20 @@ class FarewellTests(unittest.TestCase):
         self.assertFalse(worker.wake_active)
         fake_wake.stop.assert_called_once()
         self.assertIsNone(worker.wake)
+
+    def test_failed_wake_start_reports_stopped_state(self):
+        """If the wake-word engine can't start, the worker must emit
+        wake_state(False) so the WAKE button doesn't stay stuck on ON
+        while nothing is actually listening."""
+        import sys
+        worker, _ = _make_worker()
+        states = []
+        worker.wake_state.connect(lambda on: states.append(on))
+        with patch.dict("sys.modules", {"core.wake_word": None}):
+            worker.start_wake_loop()
+        self.assertFalse(worker.wake_active)
+        self.assertIsNone(worker.wake)
+        self.assertEqual(states, [False])
 
 
 if __name__ == "__main__":

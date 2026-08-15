@@ -3,7 +3,9 @@
 import unittest
 from unittest.mock import patch
 
-from functions.os_ops import normalize_url, open_notepad, set_mute
+from functions.os_ops import (
+    normalize_url, open_notepad, parse_open_command, set_mute,
+)
 
 
 class NormalizeUrlTests(unittest.TestCase):
@@ -40,6 +42,38 @@ class OpenNotepadTests(unittest.TestCase):
         popen.assert_called_once()
         # the launch target is the first positional argument
         self.assertIn("notepad", popen.call_args[0][0].lower())
+
+
+class ParseOpenCommandTests(unittest.TestCase):
+    def test_open_in_browser(self):
+        self.assertEqual(parse_open_command("open github in brave"),
+                         ("app", "github", "brave"))
+
+    def test_search_in_browser(self):
+        self.assertEqual(
+            parse_open_command("search for best laptops in chrome"),
+            ("search", "best laptops", "chrome"))
+
+    def test_google_query_in_browser_strips_trailing_google(self):
+        """'search for X on google in chrome' must search for X, not
+        'X on google'."""
+        self.assertEqual(
+            parse_open_command("search for einstein on google in chrome"),
+            ("search", "einstein", "chrome"))
+        self.assertEqual(parse_open_command("google einstein in brave"),
+                         ("search", "einstein", "brave"))
+
+    def test_empty_search_target_is_not_a_command(self):
+        """'search on google in firefox' has nothing to search — it must
+        not become a silent no-op command."""
+        self.assertIsNone(parse_open_command("search on google in firefox"))
+
+    def test_play_youtube_is_not_an_open_command(self):
+        self.assertIsNone(parse_open_command("play despacito on youtube"))
+
+    def test_politeness_is_stripped(self):
+        self.assertEqual(parse_open_command("can you open notepad"),
+                         ("app", "notepad", None))
 
 
 class SetMuteTests(unittest.TestCase):

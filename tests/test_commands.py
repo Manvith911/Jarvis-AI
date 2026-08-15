@@ -113,6 +113,18 @@ class CommandTests(unittest.TestCase):
                    side_effect=OSError("no microphone")):
             self.assertIsNone(self.assistant.listen())
 
+    def test_weather_report_preserves_processing_flag(self):
+        """A weather_report nested inside handle_command must not clear
+        is_processing while the outer request is still running — otherwise
+        the busy guard drops mid-request and a second request can sneak in."""
+        self.assistant.is_processing = True
+        with patch("core.assistant.have_internet", return_value=True), \
+                patch("core.assistant.get_city_from_ip", return_value=None), \
+                patch("core.assistant.get_weather_report",
+                      return_value=("sunny", "23℃", "21℃")):
+            self.assistant.weather_report()
+        self.assertTrue(self.assistant.is_processing)
+
 
 if __name__ == "__main__":
     unittest.main()

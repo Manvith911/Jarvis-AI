@@ -474,6 +474,11 @@ class PersonalizedAssistant:
         if not have_internet():
             self._offline("check the weather")
             return
+        # weather_report can run nested inside handle_command while the
+        # caller already holds is_processing=True (GUI worker, phone link) —
+        # save/restore it instead of forcing False, so the busy guard never
+        # drops mid-request and a second request can't sneak in.
+        was_processing = self.is_processing
         try:
             self.is_processing = True
             city = parse_city_from_query(query) if query else None
@@ -489,7 +494,7 @@ class PersonalizedAssistant:
             self.speak("Oops, couldn't get the weather right now. Blame the clouds!")
             print(f"Weather error: {e}")
         finally:
-            self.is_processing = False
+            self.is_processing = was_processing
 
     def _handle_open_command(self, kind, target, browser):
         """Execute a parsed open/search command with spoken feedback."""

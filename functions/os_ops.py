@@ -394,10 +394,18 @@ def parse_open_command(query):
     if m:
         if not browser:
             return None
-        return "search", m.group(1).strip(), browser
+        target = m.group(1).strip()
+        # "search for X on google in chrome" already lost its browser
+        # mention above but can still trail "on google" — keep the query
+        # clean ("X", not "X on google")
+        target = re.sub(r"\s+on\s+(?:google|the\s+web|web)\s*$", "",
+                        target, flags=re.I).strip()
+        return ("search", target, browser) if target else None
 
     if low.startswith("search"):
         target = re.sub(r"^search\s+(?:for\s+)?", "", q, flags=re.I).strip()
+        target = re.sub(r"\s+on\s+(?:google|the\s+web|web)\s*$", "",
+                        target, flags=re.I).strip()
         if target:
             return "search", target, browser
         return None

@@ -119,12 +119,31 @@ MAX_PROMPT_INTERESTS = 10
 MAX_SNIPPET_CHARS = 600
 
 
+# A captured value ends where the sentence moves on to a new clause —
+# "my favourite colour is blue and my name is sam" must keep only "blue",
+# not "blue and my name is sam". Clause starters: a comma, or a conjunction
+# followed by a pronoun / new topic.
+_CLAUSE_RE = re.compile(
+    r"(?:,\s*|\s+(?:and|but|so)\s+)(?:my|i'm|im|i\s+am|i\s+like|i\s+love|"
+    r"i\s+enjoy|we|you|what|who|tell|the|this|there)\b",
+    re.IGNORECASE)
+
+
+def _trim_trailing_clause(value):
+    """Cut a captured value where a new sentence/clause begins."""
+    m = _CLAUSE_RE.search(value or "")
+    if m:
+        value = value[:m.start()]
+    return value.strip()
+
+
 def _clean_value(value):
     """Trim punctuation / trailing fluff from a captured value."""
     v = (value or "").strip()
     v = re.sub(r"[.,;!?]+$", "", v).strip()
     v = re.sub(r"\s+(please|thanks|thank you|plz)\s*$", "", v,
                flags=re.I).strip()
+    v = _trim_trailing_clause(v)
     return v
 
 
